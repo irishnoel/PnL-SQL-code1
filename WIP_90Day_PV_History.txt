@@ -1,0 +1,167 @@
+DECLARE @Reporting_Date AS int,
+        @previous_Date AS int,
+        @days AS int
+
+SET @days = 90
+SET @Reporting_Date = (SELECT
+    MAX(timeid)
+FROM star.fact_performance)
+SET @previous_Date = CONVERT(varchar, DATEADD(dd, CASE DATEPART(dw,
+GETDATE() - 1 - @days)
+    WHEN 1 THEN -3
+    WHEN 2 THEN -3
+    WHEN 7 THEN -2
+    ELSE -1
+END, GETDATE() - 1 - @days),
+112) ---------------------------------------------------------- 
+-- Select @Reporting_Date, @previous_Date 
+IF OBJECT_ID('tempdb..#temp_pnl_dates') IS NOT NULL
+    DROP TABLE #temp_pnl_dates
+
+CREATE TABLE #temp_pnl_dates (
+    deskname int
+)
+
+INSERT INTO #temp_pnl_dates
+    SELECT DISTINCT
+        timeid
+    FROM star.fact_performance
+    WHERE timeid <= @Reporting_Date
+    AND timeid >= @previous_Date
+    ORDER BY timeid ASC
+
+-- 
+IF OBJECT_ID('tempdb..#AmericasDesks') IS NOT NULL
+    DROP TABLE #americasdesks
+
+CREATE TABLE #americasdesks (
+    deskname varchar(max)
+)
+
+INSERT INTO #americasdesks (deskname)
+    SELECT
+        'AM_GICS_F'
+
+--UNION ALL SELECT  'AM_DIRPLCM_L' 
+--UNION ALL SELECT  'AM_GICS_F' 
+--UNION ALL SELECT  'AM_GICS_T' 
+--UNION ALL SELECT  'AM_IRSWPS_T' 
+--UNION ALL SELECT  'AM_LIQFAC_L' 
+--UNION ALL SELECT  'AM_USMUNI_L' 
+--UNION ALL SELECT  'AS_CDOGUAR_L' 
+--UNION ALL SELECT  'AS_STRMUNI_L' 
+--UNION ALL SELECT  'UP_ABS_L' 
+--UNION ALL SELECT  'UP_AGCYSBA_L' 
+--UNION ALL SELECT  'UP_CAGOVPR_L' 
+--UNION ALL SELECT  'UP_CMBS_L' 
+--UNION ALL SELECT  'UP_CORPFIN_L' 
+--UNION ALL SELECT  'UP_RMBS_L' 
+--UNION ALL SELECT  'UP_STUDNBK_L' 
+--UNION ALL SELECT  'AM_USMUN_G_L' 
+-- Now bring in the USD PV Data 
+SELECT
+    fp.timeid,
+    dd.desk,
+    ---- 
+    (SELECT
+        MAX(D2.NAME)
+    FROM star.dimension_desk D2
+    WHERE D2.deskid = dd.parentdeskid)
+    AS Desk_Name,
+
+    -----       
+    (SELECT
+        d3.NAME
+    FROM star.dimension_desk D3
+    WHERE Dd.parentdeskid = d3.deskid)
+    AS Level3_Name,
+
+    ---- 
+    (SELECT
+        d4.NAME
+    FROM star.dimension_desk D3,
+         star.dimension_desk D4
+    WHERE Dd.parentdeskid = d3.deskid
+    AND D3.parentdeskid = d4.deskid)
+    AS Level4_Name,
+    ----
+	SUM(CAST(fp.cleanpresentvalue AS numeric)) AS Desk_SumPV,
+	SUM(CAST(fp.AccruedInterest AS numeric)) AS Desk_AccruedInt,
+	SUM(CAST(fp.CummulatedCashflow AS numeric)) AS Desk_Cashflow,
+	( SUM(CAST(fp.AccruedInterest AS numeric)) + SUM(CAST(fp.CummulatedCashflow AS numeric))	) as DeskNII,
+
+    cd.code,
+
+    CASE
+        WHEN cd.code != 'EUR' THEN (SELECT
+                AVG(FX1.exchangerate)
+            -- select the FX Rate when currrency isnt Eur - else if Eur = 1 
+            FROM star.fact_exchangerate FX1
+            WHERE FX1.timeid = fp.timeid
+            AND FX1.currencyid = fp.currencyid)
+        ELSE 1
+    END AS Applicable_FX_Rate,
+
+
+    (
+		CASE
+        WHEN cd.code != 'EUR' THEN 
+		(
+			SELECT
+                AVG(FX1.exchangerate)
+            -- select the FX Rate when currrency isnt Eur - else if Eur = 1 
+            FROM star.fact_exchangerate FX1
+            WHERE FX1.timeid = fp.timeid
+            AND FX1.currencyid = fp.currencyid)
+        ELSE 1
+		END
+		) 
+
+		*	SUM(CAST(fp.cleanpresentvalue AS numeric)
+
+	) AS USD_Clean_Pv,
+
+    (
+		CASE
+        WHEN cd.code != 'EUR' THEN 
+		(
+			SELECT
+                AVG(FX1.exchangerate)
+            -- select the FX Rate when currrency isnt Eur - else if Eur = 1 
+            FROM star.fact_exchangerate FX1
+            WHERE FX1.timeid = fp.timeid
+            AND FX1.currencyid = fp.currencyid)
+        ELSE 1
+		END
+		) 
+
+		*	SUM(CAST(fp.AccruedInterest AS numeric)
+
+	) AS USD_AccruedInterest
+
+------------------------
+FROM star.fact_performance AS fp,
+     star.dimension_desk AS dd,
+     star.dimension_currency AS cd
+WHERE fp.deskid = dd.deskid
+AND fp.currencyid = cd.currencyid
+AND fp.timeid IN (SELECT
+    *
+FROM #temp_pnl_dates)
+AND (dd.desk IN /* Exclude old desks */
+(SELECT
+    *
+FROM #americasdesks)
+--       
+--      or dd.Company in  
+--      ( 
+--        Select * from #NYCompanies 
+--      ) 
+)
+GROUP BY timeid,
+         parentdeskid,
+         company,
+         desk,
+         fp.currencyid,
+         cd.code
+ORDER BY timeid DESC

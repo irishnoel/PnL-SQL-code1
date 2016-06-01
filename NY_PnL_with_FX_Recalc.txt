@@ -1,0 +1,2517 @@
+
+/*
+
+
+
+NY PnL WITH old Desks Excluded
+NY PNL
+NY PNL
+
+
+*/
+
+
+
+
+
+-- Version 1.0 - to look at the true daily Euro PnL - sets the FXSpot trades PnL to Zero
+-- Also, compares trade version flags as well as highlights any new trades
+-- To be setup as a stored proceedure
+--
+--
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- Setup of the report.
+-- Temporary tables established to look at the values for each date
+-- The temporay tables are joined to create one overall table.
+-- *******************************************************************************************
+-- *******************************************************************************************
+
+USE Reporting_DB_HRE
+
+
+
+declare @sql varchar(5000)
+ SELECT
+       @sql = isnull(@sql+';', '') + 'drop table ' + SUBSTRING(t.name, 1, CHARINDEX('___', t.name)-1)
+ FROM tempdb..sysobjects AS t
+ WHERE t.name LIKE '#%[_][_][_]%'
+ AND t.id =
+   OBJECT_ID('tempdb..' + SUBSTRING(t.name, 1, CHARINDEX('___', t.name)-1));
+ exec (@sql)
+
+
+
+
+IF OBJECT_ID('tempdb..#temp_pnl_new_trades_today') IS  not NULL 
+DROP TABLE #temp_pnl_new_trades_today
+
+
+IF OBJECT_ID('tempdb..#temp_pnl_trades_this_year') IS  not NULL 
+DROP TABLE #temp_pnl_trades_this_year
+
+IF OBJECT_ID('tempdb..#temp_pnl_old') IS  not NULL 
+DROP TABLE #temp_pnl_old
+
+
+IF OBJECT_ID('tempdb..#trades_last_year') IS  not NULL 
+DROP TABLE #trades_last_year
+
+
+IF OBJECT_ID('tempdb..#temp_pnl_FULL_LIST') IS  not NULL 
+DROP TABLE #temp_pnl_FULL_LIST
+
+IF OBJECT_ID('tempdb..#temp_pnl_FULL_LIST_withBondLookup') IS  not NULL 
+DROP TABLE #temp_pnl_FULL_LIST_withBondLookup
+
+IF OBJECT_ID('tempdb..#Final_Table_All') IS  not NULL 
+DROP TABLE #Final_Table_All
+
+IF OBJECT_ID('tempdb..#Company_dealid_temp_trades') IS  not NULL 
+DROP TABLE #Company_dealid_temp_trades
+
+IF OBJECT_ID('tempdb..#TheseCompanies') IS  not NULL 
+DROP TABLE #TheseCompanies
+
+
+IF OBJECT_ID('tempdb..#dealid_temp_trades') IS  not NULL 
+DROP TABLE #dealid_temp_trades
+
+
+IF OBJECT_ID('tempdb..#IgnoreDesks') IS  not NULL 
+DROP TABLE #IgnoreDesks
+
+IF OBJECT_ID('tempdb..#FinalTable_All_Sorted') IS  not NULL 
+DROP TABLE #FinalTable_All_Sorted
+
+
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+--
+-- PART ONE:
+-- Declare the time/date variables.
+--
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+
+DECLARE @Reporting_Date AS INT,
+        @previous_Date AS INT,
+        @Year_End_Date AS INT,
+        @days AS Int ,
+        @tradeId AS varchar
+
+
+SET @days=0
+SET @Year_End_Date = '20151231'
+SET @Reporting_Date = (select max(TimeID) from Star.Fact_Performance)
+SET @previous_Date = (select  max(TimeID) from Star.Fact_Performance where TimeID <( select max(TimeID) from Star.Fact_Performance )) 
+
+
+
+
+/* Now Create Filter Tables to ignore closed desks
+*/
+
+IF OBJECT_ID('tempdb..#IgnoreDesks') IS  not NULL 
+DROP TABLE #IgnoreDesks
+
+
+create table #IgnoreDesks (deskname VARCHAR(MAX)) 
+
+INSERT INTO #IgnoreDesks (deskname )
+SELECT 'IFU' 
+UNION ALL SELECT 'AM_BANKBND_L' 
+UNION ALL SELECT 'IF_IFU_L' 
+
+
+/*Create a company filter -- to look at these desks
+*/
+
+IF OBJECT_ID('tempdb..#TheseCompanies') IS  not NULL 
+DROP TABLE #TheseCompanies
+
+
+create table #TheseCompanies (Company VARCHAR(MAX)) 
+
+INSERT INTO #TheseCompanies (Company )
+SELECT 'DEPFAPLC_NY' 
+UNION ALL SELECT 'SANSABIA' 
+  
+
+
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+--
+-- END OF PART ONE:
+--
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+
+
+
+
+
+
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+-- *******************************************************************************************
+
+
+
+
+
+
+
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+--
+-- PART TWO:
+-- BROKEN INTO 3 PART
+--
+--
+-- PART 2.1
+-- Get list of trade ids from last year
+--
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+
+
+SELECT distinct(dd3.TradeID) AS last_year_tradeID INTO #trades_last_year
+
+FROM Star.Fact_Performance AS fp3 ,
+     Star.Dimension_Desk AS dd3
+
+WHERE 
+	fp3.DeskID=dd3.DeskID
+	AND fp3.TimeID = @Year_End_Date
+	AND dd3.Desk  not in /* Exclude old desks */
+			(
+				Select * from #IgnoreDesks
+			)
+			
+	AND dd3.Company in 
+			(
+				Select * from #TheseCompanies
+			)
+		
+
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+--
+-- END OF PART 2.1
+--
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+
+
+
+
+-- *******************************************************************************************
+-- *******************************************************************************************
+
+
+
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+--
+-- PART 2.2
+-- Get list of New Trade IDs that were not there on previous date
+--
+-- ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+
+
+
+SELECT 
+		@Reporting_Date AS Reporting_Date,
+        @previous_Date AS Previous_Date,
+         ---------------------------------
+
+		 (dd.TradeType + '_' + dd.TradeID + '_' +  dd.Desk + '_' + cd.Code + '_' + dd.Company) AS LookupCode,
+		 ---------------------------------
+
+		 dd.TradeType AS TradeType,
+
+---------- Create the unique lookup code
+			(
+			select max (Web.DirectLink_Trade.TradeSubType)
+			from Web.DirectLink_Trade  
+			where Web.DirectLink_Trade.TradeID = dd.TradeID 
+			and Web.DirectLink_Trade.TimeID = fp.TimeID 
+			) 
+			as Trade_Sub,
+
+/* Trade is On or Off Balance Sheet
+*/
+CASE
+		WHEN dd.TradeType in ('BOND_TR', 'MM', 'REPO_TR') THEN 'Balance Sheet' 
+		WHEN dd.TradeType = ('FXSPOT') Then 'FX_Spot_for_PnL' 
+		ELSE 'Off Balance Sheet'
+END AS 'On_Off_BalanceSheet',
+/*End of Balance Sheet Flag*/
+
+----------
+	dd.TradeID ,
+	dd.DealID,
+	( dd.Desk + '_' + dd.DealID) AS XD_LookupCode,
+	( dd.Company + '_' + dd.DealID) AS XC_LookupCode,	
+		
+CASE
+		WHEN dd.TradeType = 'BOND_TR' THEN dd.SecurityID
+		ELSE ''
+END AS 'Security',	
+
+CASE
+		WHEN dd.TradeType = 'BOND_TR' THEN dd.Issuer
+		ELSE ''
+END AS 'BondIssuer',
+		 
+		dd.Customer  as 'Trade_Counterparty',
+		dd.TradeStatus,
+		dd.TradeEnd,
+
+/* Flag Internal Issuance-Trades */
+	CASE
+			WHEN dd.TradeType = 'BOND_TR'  
+						THEN CASE 
+							WHEN LEFT(dd.Issuer,4)='DPFA'	THEN 'Own Issuance'
+							WHEN dd.Issuer='PFANDBKLUXSA'	THEN 'Own Issuance'
+							WHEN dd.Issuer='PBILLULL'		THEN 'Own Issuance'
+						ELSE 'External Issuance'
+						
+						END 
+			
+		ELSE CASE 
+			
+			WHEN LEFT(dd.Customer,4)='DPFA'  
+						THEN 'Internal'
+						ELSE 'External'
+						
+						END 
+
+	END AS 'Internal_External',
+
+
+/*END OF Internal Flag */
+
+         dd.Desk,
+--
+		(select max(D2.Name) 
+		from Star.Dimension_Desk D2 
+		where D2.DeskID = dd.ParentDeskID) 
+	as Desk_Name,
+
+		
+	(
+		Select d3.Name 
+		from Star.Dimension_Desk D3 
+		where Dd.ParentDeskID =d3.deskid
+	) 
+as Level3_Name ,
+		
+
+
+--
+	(
+		Select d4.Name 
+		from Star.Dimension_Desk D3 ,Star.Dimension_Desk D4 
+		where Dd.ParentDeskID =d3.deskid
+			and D3.ParentDeskID = d4.deskid
+	) 
+as Level4_Name ,
+--
+         dd.Company,
+         cd.Code AS Currency,
+         dd.TradeVersion Currentversion,
+      
+ 
+
+----------------------------------------------------
+-- FX Rates
+		CASE
+		   WHEN cd.Code != 'EUR' THEN
+				  (SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+
+				   FROM Star.Fact_ExchangeRate FX1
+				   WHERE FX1.TimeID = fp.TimeID
+					 AND FX1.CurrencyID =fp.CurrencyID)
+			ELSE 1
+		END AS Current_FX_Rate,
+	--------------------------------
+		
+	0 AS Previous_FX_Rate,
+	0 AS YE_FX_Rate,
+
+-- finished fx rates
+--------------------------------
+
+
+
+        
+/*************************************************************************
+************************************************************************
+
+					Now Bringing in the PnL Elements
+ 
+
+							3 ELEMENTS
+
+>					**> Clean PV>		**> Going to split this into 3 measures
+
+>					**> Accured Interest
+
+>					**> Cumulative Cashflow
+				
+			
+CLEAN PVs / MTMs > 3 of them: Current, Previous, Year.End
+Calculate the local currency Clean MTM */
+round(fp.CurrentNotional,2) as CurrentNotional_Euro,
+0 as Previous_CurrentNotional_Euro,
+0 as YE_CurrentNotional_Euro,
+
+
+'xxxxx_Local Currency Values' as 'xxxxx_Local_ccy_PnL_Elements',
+
+				   round(CASE WHEN cd.Code != 'EUR' THEN fp.CleanPresentValue *
+						   (SELECT avg(FX1.ExchangeRate)
+							FROM Star.Fact_ExchangeRate FX1
+							WHERE FX1.TimeID = fp.TimeID
+							  AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.CleanPresentValue END, 2) AS Current_Localccy_CleanPV,
+		
+/*
+Calculate the Previous local currency Clean MTM */
+		0 AS Previous_Localccy_CleanPV,		/* Trade didnt exist yesterday */
+		0 AS YE_Localccy_CleanPV,			/* Trade didnt exist at year.end */
+
+
+/* 
+Now the Local Accrued Interst
+*/
+				   round(CASE WHEN cd.Code != 'EUR' THEN fp.AccruedInterest *
+						   (SELECT avg(FX1.ExchangeRate)
+							FROM Star.Fact_ExchangeRate FX1
+							WHERE FX1.TimeID = fp.TimeID
+							  AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.AccruedInterest END, 2) AS Current_Localccy_Accrued_Int,
+		
+/*
+Calculate the Previous local currency Accrued Int */
+		0 AS Previous_Localccy_Accrued_Int,		/* Trade didnt exist yesterday */
+		0 AS YE_Localccy_Accrued_Int,			/* Trade didnt exist at year.end */
+
+
+
+/* 
+Now the Local Dirty PV
+*/
+				   round(CASE WHEN cd.Code != 'EUR' THEN fp.DirtyPresentValue *
+						   (SELECT avg(FX1.ExchangeRate)
+							FROM Star.Fact_ExchangeRate FX1
+							WHERE FX1.TimeID = fp.TimeID
+							  AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.DirtyPresentValue END, 2) AS Current_Localccy_Dirty_PV,
+		
+/*
+Calculate the Previous local currency Dirty PV*/
+		0 AS Previous_Localccy_Dirty_PV,		/* Trade didnt exist yesterday */
+		0 AS YE_Localccy_Dirty_PV,			/* Trade didnt exist at year.end */
+
+
+/* 
+Now the Local Cummulative Cashflow
+*/
+				   round(CASE WHEN cd.Code != 'EUR' THEN fp.CummulatedCashflow *
+						   (SELECT avg(FX1.ExchangeRate)
+							FROM Star.Fact_ExchangeRate FX1
+							WHERE FX1.TimeID = fp.TimeID
+							  AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.CummulatedCashflow END, 2) AS Current_Localccy_Cum_Cashflow,
+		
+/*
+Calculate the Previous local currency Dirty PV*/
+		0 AS Previous_Localccy_Cum_Cashflow,		/* Trade didnt exist yesterday */
+		0 AS YE_Localccy_Cum_Cashflow,			/* Trade didnt exist at year.end */
+
+
+
+
+
+'****** USD Values' as '****** usd_PnL_Elements',
+/*CLEAN MTMs in $$$ USD --> 3 of them: Current, Previous, Year.End
+Calculate the Clean MTM in USD */
+				   round
+					( fp.CleanPresentValue *
+						   (SELECT avg(FX1.ExchangeRate)
+							FROM Star.Fact_ExchangeRate FX1
+							WHERE FX1.TimeID = fp.TimeID
+							  AND FX1.CurrencyID = 2) 
+					, 2) 
+					AS 'USD_CleanPV',
+
+0 AS 'Previous_USD_CleanPV',		/* Trade didnt exist yesterday */
+0 AS 'YearEnd_USD_CleanPV',		/* Trade didnt exist yesterday */
+
+
+
+/* 
+Now the USD Accrued Interst
+*/
+			   round
+				( fp.AccruedInterest *
+					   (SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						WHERE FX1.TimeID = fp.TimeID
+						  AND FX1.CurrencyID = 2) 
+				, 2) 
+				AS 'USD_Accrued_Int',
+
+0 AS 'Previous_USD_Accrued_Int',		/* Trade didnt exist yesterday */
+0 AS 'YearEnd_USD_Accrued_Int',		/* Trade didnt exist yesterday */
+
+
+
+/* 
+Now the USD Dirty PV
+*/
+			   round
+				( fp.DirtyPresentValue *
+					   (SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						WHERE FX1.TimeID = fp.TimeID
+						  AND FX1.CurrencyID = 2) 
+				, 2) 
+				AS 'USD_Dirty_PV',
+
+0 AS 'Previous_USD_Dirty_PV',		/* Trade didnt exist yesterday */
+0 AS 'YearEnd_USD_Dirty_PV',		/* Trade didnt exist yesterday */
+
+
+
+/* 
+Now the USD Cummulative Cashlow
+*/
+			   round
+				( fp.CummulatedCashflow *
+					   (SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						WHERE FX1.TimeID = fp.TimeID
+						  AND FX1.CurrencyID = 2) 
+				, 2) 
+				AS 'USD_Cum_Cashflow',
+
+0 AS 'Previous_USD_Cum_Cashflow',		/* Trade didnt exist yesterday */
+0 AS 'YearEnd_USD_Cum_Cashflow',		/* Trade didnt exist yesterday */
+
+
+
+
+
+
+/* ***********************************************
+*CLEAN MTMs in EURO **> 3 of them: Current, Previous, Year.End
+Calculate the Clean MTM in USD */
+'xxxxx_Euro Values' as 'xxxxx_Euro_Elements',
+
+					
+	fp.CleanPresentValue AS 'Current_Eur_PV',
+	0 AS 'Previous_Eur_PV',
+	0 AS 'YE_Eur_PV',
+
+
+
+/*Euro Accrued Interest */
+	fp.AccruedInterest AS 'Current_Eur_Accrued_interest',
+	0 AS 'Previous_Eur_Accrued_interest',
+	0 AS 'YE_Eur_Accrued_interest',
+
+
+/* Euro Dirty PV */
+	fp.DirtyPresentValue AS 'Current_Eur_Dirty_PV',
+	0 AS 'Previous_Eur_Dirty_PV',
+	0 AS 'YE_Eur_Dirty_PV',
+
+/* Euro Cashflow */
+	fp.CummulatedCashflow AS 'Current_Eur_Cum_Cashflow',
+	0 AS 'Previous_Eur_Cum_Cashflow',
+	0 AS 'YE_Eur_Cum_Cashflow',
+
+
+
+/* Euro DTD PnL Measures */
+'xxxxx_System_PnL_Euro' as 'xxxxx_System_PnL_Euro_Flag',
+
+	fp.PnlTotalDtd AS 'Current_Eur_PNL_DTD',
+	0 AS 'Previous_Eur_PNL_DTD',
+	0 AS 'YE_Eur_PNL_DTD',
+
+/* Euro YTD PnL Measures */
+	fp.PnlTotalYtd AS 'Current_Eur_PNL_YTD',
+	0 AS 'Previous_Eur_PNL_YTD',
+	0 AS 'YE_Eur_PNL_YTD',
+
+
+/* 
+*
+*
+*
+
+Create DELTAs for Various PnL Elements 
+
+*
+*
+*
+*/
+'Delta_Euro' AS 'Delta_EuroFlag',
+
+/* DELTA DTD Euro VALUES */	
+	fp.CleanPresentValue - 0 AS 'Delta_Euro_DTD_Clean_PV',
+	fp.DirtyPresentValue - 0 AS 'Delta_Euro_DTD_Dirty_PV',
+	fp.AccruedInterest -0 AS 'Delta_Euro_DTD_Accrued_Int',
+	fp.CummulatedCashflow - 0 'Delta_Euro_DTD_CumCashflow_PV',
+
+
+/* DELTA YTD Euro VALUES */
+	fp.CleanPresentValue - 0 AS 'Delta_Euro_YTD_Clean_PV',
+	fp.DirtyPresentValue - 0 AS 'Delta_Euro_YTD_Dirty_PV',
+	fp.AccruedInterest - 0 AS 'Delta_Euro_YTD_Accrued_Int',
+	fp.CummulatedCashflow - 0 'Delta_Euro_YTD_CumCashflow_PV',
+
+/* 
+USD Deltas
+NOW DO THE SAME DELTAs for USD Measures	*/
+'USD_Delta_USD' AS 'USD_Delta_Flag',
+
+/* DELTA DTD USD VALUES */	
+	(fp.CleanPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - 0 AS 'Delta_Usd_DTD_Clean_PV',
+	
+	(fp.DirtyPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - 0 AS 'Delta_Usd_DTD_Dirty_PV',
+	
+	(fp.AccruedInterest * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	-0 AS 'Delta_Usd_DTD_Accrued_Int',
+	
+	(fp.CummulatedCashflow * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 'Delta_Usd_DTD_CumCashflow_PV',
+
+
+/* DELTA YTD USD VALUES */
+	(fp.CleanPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_Clean_PV',
+	
+	(fp.DirtyPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_Dirty_PV',
+	
+	(fp.AccruedInterest * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_Accrued_Int',
+
+	(fp.CummulatedCashflow * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_CumCashflow_PV',
+
+
+
+
+
+/*	END Of New Trade Today DELTAs for Various PnL Elements	*/
+
+
+         
+
+/* New/Old Flag */
+ 'new_today' AS new_trade_flag 
+
+
+INTO #temp_pnl_new_trades_today		/* NAME OF THE NEW TRADE TODAY TEMP TABLE */
+
+
+FROM 
+	Star.Fact_Performance AS fp ,
+	Star.Dimension_Desk AS dd ,
+	Star.Dimension_Currency AS cd 
+
+WHERE 
+	fp.DeskID=dd.DeskID
+	AND fp.CurrencyID = cd.CurrencyID
+	AND fp.TimeID = @Reporting_Date
+	
+	AND  dd.Company IN  /* Exclude Non NY Relevant Companies */
+	(
+		Select * from #TheseCompanies
+        
+	)
+ 
+	AND dd.Desk NOT in /* Exclude old desks */
+	(
+		Select * from #IgnoreDesks
+	)
+ 
+ 	AND dd.TradeID NOT IN
+  	
+	(
+		SELECT dd1.TradeID
+		FROM Star.Fact_Performance AS fp1 ,
+			Star.Dimension_Desk AS dd1	
+		
+		WHERE 
+		fp1.DeskID=dd1.DeskID
+		AND fp1.TimeID = @previous_Date		/*Removes trades there on previous business day */
+
+		AND
+		(  dd1.Company IN  /* Exclude Non NY Relevant Companies */
+			(
+				Select * from #TheseCompanies
+		        
+			)
+		 
+			AND dd1.Desk NOT in /* Exclude old desks */
+			(
+				Select * from #IgnoreDesks
+			)
+		)
+
+	) 
+
+
+
+/* ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+
+ END OF PART 2.2 TRADES NEW TODAY
+
+ ********%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*********
+*/
+
+
+
+
+
+
+
+
+/* ******************************************************************************
+ ********************************************************************************
+
+
+
+ PART 2.3
+ Get list of New Trade IDs that were not there at Start of the Year
+
+
+
+*/
+
+
+
+SELECT 
+	@Reporting_Date AS Reporting_Date,
+	@previous_Date AS Previous_Date,
+/*---------------------------------*/
+
+	(dd.TradeType + '_' + dd.TradeID + '_' +  dd.Desk + '_' + cd.Code + '_' + dd.Company) AS LookupCode,
+/*---------------------------------*/
+
+	dd.TradeType AS TradeType,
+/* Trade Subtype */
+	(
+	select max (Web.DirectLink_Trade.TradeSubType)
+	from Web.DirectLink_Trade  
+	where Web.DirectLink_Trade.TradeID = dd.TradeID 
+	and Web.DirectLink_Trade.TimeID = fp.TimeID 
+	) 
+	as Trade_Sub,
+/* End ofTrade Subtype */
+
+/* Trade is On or Off Balance Sheet
+*/
+CASE
+		WHEN dd.TradeType in ('BOND_TR', 'MM', 'REPO_TR') THEN 'Balance Sheet' 
+		WHEN dd.TradeType = ('FXSPOT') Then 'FX_Spot_for_PnL' 
+		ELSE 'Off Balance Sheet'
+END AS 'On_Off_BalanceSheet',
+/*End of Balance Sheet Flag*/
+
+
+	dd.TradeID ,
+	dd.DealID,
+	( dd.Desk + '_' + dd.DealID) AS XD_LookupCode,
+	( dd.Company + '_' + dd.DealID) AS XC_LookupCode,
+
+	CASE
+			WHEN dd.TradeType = 'BOND_TR' THEN dd.SecurityID
+			ELSE ''
+	END AS 'Security',
+	
+	CASE
+			WHEN dd.TradeType = 'BOND_TR' THEN dd.Issuer
+			ELSE ''
+	END AS 'BondIssuer',
+	
+	dd.Customer as 'Trade_Counterparty', 
+	dd.TradeStatus,
+	dd.TradeEnd,
+
+/* Flag Internal Issuance-Trades */
+	CASE
+			WHEN dd.TradeType = 'BOND_TR'  
+						THEN CASE 
+							WHEN LEFT(dd.Issuer,4)='DPFA'	THEN 'Own Issuance'
+							WHEN dd.Issuer='PFANDBKLUXSA'	THEN 'Own Issuance'
+							WHEN dd.Issuer='PBILLULL'		THEN 'Own Issuance'
+						ELSE 'External Issuance'
+						
+						END 
+			
+		ELSE CASE 
+			
+			WHEN LEFT(dd.Customer,4)='DPFA'  
+						THEN 'Internal'
+						ELSE 'External'
+						
+						END 
+
+	END AS 'Internal_External',
+
+
+/*END OF Internal Flag */
+
+
+	dd.Desk,
+--
+		(select max(D2.Name) 
+		from Star.Dimension_Desk D2 
+		where D2.DeskID = dd.ParentDeskID) 
+	as Desk_Name,
+	
+		
+	(
+		Select d3.Name 
+		from Star.Dimension_Desk D3 
+		where Dd.ParentDeskID =d3.deskid
+	) 
+as Level3_Name ,
+		
+--
+	(
+		Select d4.Name 
+		from Star.Dimension_Desk D3 ,Star.Dimension_Desk D4 
+		where Dd.ParentDeskID =d3.deskid
+			and D3.ParentDeskID = d4.deskid
+	) 
+as Level4_Name,
+--
+	dd.Company,
+	cd.Code AS Currency,
+	dd.TradeVersion Currentversion,
+
+
+
+/* FX Rates Used
+3 different times required:
+
+Present day */
+CASE
+WHEN cd.Code != 'EUR' THEN
+		(SELECT avg(FX1.ExchangeRate) /* select the FX Rate when currrency isnt Eur - else if Eur = 1 */
+
+		 FROM Star.Fact_ExchangeRate FX1
+		 WHERE FX1.TimeID = fp.TimeID
+		   AND FX1.CurrencyID =fp.CurrencyID)
+	ELSE 1
+END AS Current_FX_Rate,
+
+
+/* Previous day */
+CASE
+WHEN cd.Code != 'EUR' THEN
+		(SELECT avg(FX1.ExchangeRate) /* select the FX Rate when currrency isnt Eur - else if Eur = 1 */
+
+		 FROM Star.Fact_ExchangeRate FX1
+		 WHERE FX1.TimeID = fp1.TimeID
+		   AND FX1.CurrencyID =fp1.CurrencyID)
+	ELSE 1
+END AS Previous_FX_Rate,
+
+
+/* Year End */
+0 AS YE_FX_Rate,
+
+
+
+/*************************************************************************
+************************************************************************
+					TRADES NEW SINCE THIS YEAR
+
+					Now Bringing in the PnL Elements
+ 
+
+							3 ELEMENTS
+
+>					**> Clean PV>		**> Going to split this into 3 measures
+
+>					**> Accured Interest
+
+>					**> Cumulative Cashflow
+
+				
+			
+CLEAN MTMs > 3 of them: Current, Previous, Year.End
+
+
+Calculate the local currency Clean MTM */
+round(fp.CurrentNotional,2) as CurrentNotional_Euro,
+round(fp1.CurrentNotional,2) as Previous_CurrentNotional_Euro,
+0 as YE_CurrentNotional_Euro,
+
+
+'xxxxx_Local Currency Values' as 'xxxxx_Local_ccy_PnL_Elements',
+
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp.CleanPresentValue *
+						(SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						
+						WHERE FX1.TimeID = fp.TimeID
+						AND FX1.CurrencyID =fp.CurrencyID) 
+					ELSE fp.CleanPresentValue END, 2
+			) AS Current_Localccy_CleanPV,
+
+
+		/*Calculate the Previous local currency Clean MTM */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp1.CleanPresentValue *
+				 (SELECT avg(FX1.ExchangeRate)
+				  FROM Star.Fact_ExchangeRate FX1
+				  WHERE FX1.TimeID = fp1.TimeID
+					AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.CleanPresentValue END, 2
+			) AS Previous_Localccy_CleanPV,
+
+
+		/*Calculate the Year.End local currency Clean MTM */
+		0 AS YE_Localccy_CleanPV,	/* Trade didnt exist at year.end */
+
+
+
+		/* 
+		Now the Local Accrued Interst
+		*/
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp.AccruedInterest *
+						(SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						
+						WHERE FX1.TimeID = fp.TimeID
+						AND FX1.CurrencyID =fp.CurrencyID) 
+					ELSE fp.AccruedInterest END, 2
+			) AS Current_Localccy_Accrued_Int,
+
+
+		/*Calculate the Previous local currency Accrued Interest */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp1.AccruedInterest *
+				 (SELECT avg(FX1.ExchangeRate)
+				  FROM Star.Fact_ExchangeRate FX1
+				  WHERE FX1.TimeID = fp1.TimeID
+					AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.AccruedInterest END, 2
+			) AS Previous_Localccy_Accrued_Int,
+
+
+		/*Calculate the Year.End local currency Accrued Interest */
+		0 AS YE_Localccy_Accrued_Int,	/* Trade didnt exist at year.end */
+
+	/* END of Accrued Interest */
+
+
+
+
+
+	/*Local currency Dirty PV */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp.DirtyPresentValue *
+						(SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						
+						WHERE FX1.TimeID = fp.TimeID
+						AND FX1.CurrencyID =fp.CurrencyID) 
+					ELSE fp.DirtyPresentValue END, 2
+			) AS Current_Localccy_Dirty_PV,
+
+
+	/*Calculate the Previous local currency Dirty PV */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp1.DirtyPresentValue *
+				 (SELECT avg(FX1.ExchangeRate)
+				  FROM Star.Fact_ExchangeRate FX1
+				  WHERE FX1.TimeID = fp1.TimeID
+					AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.DirtyPresentValue END, 2
+			) AS Previous_Localccy_Dirty_PV,
+
+
+	/*Calculate the Year.End local currency Dirty PV */
+		0 AS YE_Localccy_Dirty_PV,	/* Trade didnt exist at year.end */
+
+	-- END Dirty PV
+
+
+
+
+	/*Local currency Cumm Cashflow */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp.CummulatedCashflow *
+						(SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						
+						WHERE FX1.TimeID = fp.TimeID
+						AND FX1.CurrencyID =fp.CurrencyID) 
+					ELSE fp.CummulatedCashflow END, 2
+			) AS Current_Localccy_Cum_Cashflow,
+
+
+	/*Calculate the Previous local currency Dirty PV */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp1.CummulatedCashflow *
+				 (SELECT avg(FX1.ExchangeRate)
+				  FROM Star.Fact_ExchangeRate FX1
+				  WHERE FX1.TimeID = fp1.TimeID
+					AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.CummulatedCashflow END, 2
+			) AS Previous_Localccy_Cum_Cashflow,
+
+
+	/*Calculate the Year.End local currency Dirty PV */
+		0 AS YE_Localccy_Cum_Cashflow,	/* Trade didnt exist at year.end */
+
+	/* END Local Cumm Cashflow
+
+
+END OF LOCAL VALUES */
+
+
+
+
+
+'xxxxx_USD Values' as 'xxxxx_USD_PnL_Elements',
+/*Calculate the local currency Clean MTM */			(
+				fp.CleanPresentValue * 
+					(	SELECT avg(FX1.ExchangeRate) 
+						FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'USD_CleanPV',
+
+				 
+
+			(	
+				fp1.CleanPresentValue *
+					(	SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'Previous_USD_CleanPV',
+
+
+			0 as 'YearEnd_USD_CleanPV',
+		/* END $ USD CLEAN PV */
+
+
+		/* $ USD Accrued Int */
+			(
+				fp.AccruedInterest * 
+					(	SELECT avg(FX1.ExchangeRate) 
+						FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'USD_Accrued_Int',
+
+				 
+
+			(	
+				fp1.AccruedInterest *
+					(	SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'Previous_USD_Accrued_Int',
+
+
+			0 as 'YearEnd_USD_Accrued_Int',
+		/* END $ USD Accrued Int */
+
+
+
+
+		/* $ USD Dirty PV */
+			(
+				fp.DirtyPresentValue * 
+					(	SELECT avg(FX1.ExchangeRate) 
+						FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'USD_Dirty_PV',
+
+				 
+
+			(	
+				fp1.DirtyPresentValue *
+					(	SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'Previous_USD_Dirty_PV',
+
+
+			0 as 'YearEnd_USD_Dirty_PV',
+		/* END $ USD Dirty PV */
+
+
+
+		/* $ USD Cummulative Cashflow */
+			(
+				fp.CummulatedCashflow * 
+					(	SELECT avg(FX1.ExchangeRate) 
+						FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'USD_Cum_Cashflow',
+
+				 
+
+			(	
+				fp1.CummulatedCashflow *
+					(	SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2
+					)
+			) as 'Previous_USD_Cum_Cashflow',
+
+
+			0 as 'YearEnd_USD_Cum_Cashflow',
+		/* END $ USD Cummulative Cashflow*/
+
+
+
+
+
+/* END USD Values */
+
+
+
+
+'xxxxx_Euro Values' as 'xxxxx_Euro_Elements',
+/* ***********************************************
+*CLEAN MTMs in EURO **> 3 of them: Current, Previous, Year.End
+Calculate the Clean MTM in EURO */
+
+		/* Euro Clean PV */
+		fp.CleanPresentValue AS 'Current_Eur_PV',
+		fp1.CleanPresentValue AS 'Previous_Eur_PV',
+		0 AS 'YE_Eur_PV',
+
+
+		/*Euro Accrued Interest */
+			fp.AccruedInterest AS 'Current_Eur_Accrued_interest',
+			fp1.AccruedInterest AS 'Previous_Eur_Accrued_interest',
+			0 AS 'YE_Eur_Accrued_interest',
+
+
+
+		/* Euro Dirty PV */
+			fp.DirtyPresentValue AS 'Current_Eur_Dirty_PV',
+			fp1.DirtyPresentValue AS 'Previous_Eur_Dirty_PV',
+			0 AS 'YE_Eur_Dirty_PV',
+
+		/* Euro Cashflow */
+			fp.CummulatedCashflow AS 'Current_Eur_Cum_Cashflow',
+			fp1.CummulatedCashflow AS 'Previous_Eur_Cum_Cashflow',
+			0 AS 'YE_Eur_Cum_Cashflow',
+
+
+
+/* Euro DTD PnL Measures */
+'xxxxx_System_PnL_Euro' as 'xxxxx_System_PnL_Euro_Flag',
+			fp.PnlTotalDtd AS 'Current_Eur_PNL_DTD',
+			fp1.PnlTotalDtd AS 'Previous_Eur_PNL_DTD',
+			0 'YE_Eur_PNL_DTD',
+
+
+/* Euro YTD PnL Measures */
+			fp.PnlTotalYtd AS 'Current_Eur_PNL_YTD',
+			fp1.PnlTotalYtd AS 'Previous_Eur_PNL_YTD',
+			0 AS 'YE_Eur_PNL_YTD',
+
+
+
+/* 
+*
+*
+*
+
+Create DELTAs for Various PnL Elements 
+
+*
+*
+*/
+'Delta_Euro' AS 'Delta_EuroFlag',
+
+/* DELTA DTD Euro VALUES */	
+	fp.CleanPresentValue - fp1.CleanPresentValue AS 'Delta_Euro_DTD_Clean_PV',
+	fp.DirtyPresentValue - fp1.DirtyPresentValue AS 'Delta_Euro_DTD_Dirty_PV',
+	fp.AccruedInterest - fp1.AccruedInterest AS 'Delta_Euro_DTD_Accrued_Int',
+	fp.CummulatedCashflow - fp1.CummulatedCashflow AS 'Delta_Euro_DTD_CumCashflow_PV',
+
+
+/* DELTA YTD Euro VALUES */
+	fp.CleanPresentValue - 0 AS 'Delta_Euro_YTD_Clean_PV',
+	fp.DirtyPresentValue - 0 AS 'Delta_Euro_YTD_Dirty_PV',
+	fp.AccruedInterest - 0 AS 'Delta_Euro_YTD_Accrued_Int',
+	fp.CummulatedCashflow - 0 AS 'Delta_Euro_YTD_CumCashflow_PV',
+
+
+
+
+/* 
+USD Deltas
+NOW DO THE SAME DELTAs for USD Measures	*/
+'USD_Delta' AS 'USD_Delta_Flag',
+
+/* DELTA DTD USD VALUES */	
+	(fp.CleanPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.CleanPresentValue *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2))
+AS 'Delta_Usd_DTD_Clean_PV',
+	
+	(fp.DirtyPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.DirtyPresentValue *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2)) 
+AS 'Delta_Usd_DTD_Dirty_PV',
+	
+	(fp.AccruedInterest * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.AccruedInterest *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2))
+AS 'Delta_Usd_DTD_Accrued_Int',
+	
+	(fp.CummulatedCashflow * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.CummulatedCashflow *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2)) 
+AS 'Delta_Usd_DTD_CumCashflow_PV',
+
+
+/* DELTA YTD USD VALUES */
+	(fp.CleanPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_Clean_PV',
+	
+	(fp.DirtyPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_Dirty_PV',
+	
+	(fp.AccruedInterest * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 AS 'Delta_Usd_YTD_Accrued_Int',
+
+	(fp.CummulatedCashflow * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	- 0 'Delta_Usd_YTD_CumCashflow_PV',
+
+
+
+
+
+/*	END Of New Trade Today DELTAs for Various PnL Elements	*/
+
+
+-- New/Old Trade Flag
+'new_trades_this_year' AS new_trade_flag INTO #temp_pnl_trades_this_year
+
+
+
+FROM 
+	Star.Fact_Performance AS fp ,
+	Star.Dimension_Desk AS dd ,
+	Star.Fact_Performance AS fp1,
+	Star.Dimension_Desk AS dd1,
+	Star.Dimension_Currency AS cd WHERE fp.DeskID=dd.DeskID
+	AND fp.CurrencyID = cd.CurrencyID
+	AND fp1.CurrencyID = cd.CurrencyID
+	AND fp1.DeskID=dd1.DeskID
+	AND fp.TimeID = @Reporting_Date
+	AND fp1.TimeID = @previous_Date
+	AND dd1.Company = dd.Company
+	AND dd1.TradeID =dd.TradeID
+	AND fp1.DeskID=dd1.DeskID
+
+	AND
+		dd.Company IN  /* Exclude Non NY Relevant Companies */
+		(
+			Select * from #TheseCompanies   
+		)
+	AND dd.Desk NOT in /* Exclude old desks */
+		(
+			Select * from #IgnoreDesks
+		)
+
+--
+
+AND dd.TradeID NOT IN
+
+(
+	SELECT last_year_tradeID
+	FROM #trades_last_year) --
+
+	AND dd.TradeID NOT IN
+	(SELECT TradeID
+	FROM #temp_pnl_new_trades_today
+) 
+
+
+
+
+
+
+/*
+
+
+
+
+
+NOW WE BRING IN TRADES EXISTING AT YEAR END!
+
+
+
+
+
+*/
+
+  SELECT @Reporting_Date AS Reporting_Date,
+         @previous_Date AS Previous_Date,
+
+         ---------------------------------
+         (dd.TradeType + '_' + dd.TradeID + '_' +  dd.Desk + '_' + cd.Code + '_' + dd.Company) AS LookupCode,
+         ---------------------------------
+
+         dd.TradeType AS TradeType,
+----------
+			(
+			select max(Web.DirectLink_Trade.TradeSubType)
+			from Web.DirectLink_Trade  
+			where Web.DirectLink_Trade.TradeID = dd.TradeID 
+			and Web.DirectLink_Trade.TimeID = fp.TimeID 
+			) 
+			as Trade_Sub,
+----------
+
+/* Trade is On or Off Balance Sheet*/
+CASE
+		WHEN dd.TradeType in ('BOND_TR', 'MM', 'REPO_TR') THEN 'Balance Sheet' 
+		WHEN dd.TradeType = ('FXSPOT') Then 'FX_Spot_for_PnL' 
+		ELSE 'Off Balance Sheet'
+END AS 'On_Off_BalanceSheet',
+/*End of Balance Sheet Flag*/
+
+	dd.TradeID ,
+	dd.DealID,
+	( dd.Desk + '_' + dd.DealID) AS XD_LookupCode,
+	( dd.Company + '_' + dd.DealID) AS XC_LookupCode,
+
+	CASE
+			WHEN dd.TradeType = 'BOND_TR' THEN dd.SecurityID
+			ELSE ''
+	END AS 'Security',	
+
+	CASE
+			WHEN dd.TradeType = 'BOND_TR' THEN dd.Issuer
+			ELSE ''
+	END AS 'BondIssuer',
+
+		dd.Customer  as 'Trade_Counterparty',
+        dd.TradeStatus,
+		dd.TradeEnd,
+
+/* Flag Internal Issuance-Trades */
+	CASE
+			WHEN dd.TradeType = 'BOND_TR'  
+						THEN CASE 
+							WHEN LEFT(dd.Issuer,4)='DPFA'	THEN 'Own Issuance'
+							WHEN dd.Issuer='PFANDBKLUXSA'	THEN 'Own Issuance'
+							WHEN dd.Issuer='PBILLULL'		THEN 'Own Issuance'
+						ELSE 'External Issuance'
+						
+						END 
+			
+		ELSE CASE 
+			
+			WHEN LEFT(dd.Customer,4)='DPFA'  
+						THEN 'Internal'
+						ELSE 'External'
+						
+						END 
+
+	END AS 'Internal_External',
+
+
+/*END OF Internal Flag */
+
+         dd.Desk,
+--
+		(select max(D2.Name) 
+		from Star.Dimension_Desk D2 
+		where D2.DeskID = dd.ParentDeskID) 
+	as Desk_Name,
+	
+--
+		
+	(
+		Select d3.Name 
+		from Star.Dimension_Desk D3 
+		where Dd.ParentDeskID =d3.deskid
+	) 
+as Level3_Name ,
+		
+--
+	(
+		Select d4.Name 
+		from Star.Dimension_Desk D3 ,Star.Dimension_Desk D4 
+		where Dd.ParentDeskID =d3.deskid
+			and D3.ParentDeskID = d4.deskid
+	) 
+as Level4_Name,
+
+--
+         dd.Company,
+         cd.Code AS Currency,
+         dd.TradeVersion Currentversion,
+
+
+/* FX RATES */
+
+       CASE
+             WHEN cd.Code != 'EUR' THEN
+                    (SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+
+                     FROM Star.Fact_ExchangeRate FX1
+                     WHERE FX1.TimeID = fp.TimeID
+                       AND FX1.CurrencyID =fp.CurrencyID)
+             ELSE 1
+         END AS Current_FX_Rate,
+         ---------------------------------
+
+         CASE
+             WHEN cd.Code != 'EUR' THEN
+                    (SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+
+                     FROM Star.Fact_ExchangeRate FX1
+                     WHERE FX1.TimeID = fp1.TimeID
+                       AND FX1.CurrencyID =fp1.CurrencyID)
+             ELSE 1
+         END AS Previous_FX_Rate,
+        
+		 CASE
+             WHEN cd.Code != 'EUR' THEN
+                    (SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+
+                     FROM Star.Fact_ExchangeRate FX1
+                     WHERE FX1.TimeID = fp2.TimeID
+                       AND FX1.CurrencyID =fp2.CurrencyID)
+             ELSE 1
+         END AS YE_FX_Rate,
+
+
+/* finished fx rates
+*/
+
+
+
+
+        
+/*************************************************************************
+************************************************************************
+
+					Now Bringing in the PnL Elements
+ 
+
+							3 ELEMENTS
+
+>					**> Clean PV>		**> Going to split this into 3 measures
+
+>					**> Accured Interest
+
+>					**> Cumulative Cashflow
+				
+			
+CLEAN MTMs > 3 of them: Current, Previous, Year.End
+Calculate the local currency Clean MTM */
+round(fp.CurrentNotional,2) as CurrentNotional_Euro,
+round(fp1.CurrentNotional,2) as Previous_CurrentNotional_Euro,
+round(fp2.CurrentNotional,2) as YE_CurrentNotional_Euro,
+
+
+
+'xxxxx_Local Currency Values' as 'xxxxx_Local_ccy_PnL_Elements',
+         round
+		(
+			CASE WHEN cd.Code != 'EUR' THEN fp.CleanPresentValue *
+                 (SELECT avg(FX1.ExchangeRate)
+                  FROM Star.Fact_ExchangeRate FX1
+                  WHERE FX1.TimeID = fp.TimeID
+                    AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.CleanPresentValue END, 2
+		) 
+		AS Current_Localccy_CleanPV,
+
+ 
+/*Calculate the Previous local currency Clean MTM */
+
+         round
+		(
+			CASE WHEN cd.Code != 'EUR' THEN fp1.CleanPresentValue *
+                 (SELECT avg(FX1.ExchangeRate)
+                  FROM Star.Fact_ExchangeRate FX1
+                  WHERE FX1.TimeID = fp1.TimeID
+                    AND FX1.CurrencyID =fp1.CurrencyID
+		) ELSE fp1.CleanPresentValue END, 2) 
+		AS Previous_Localccy_CleanPV,
+      
+ /* Calculate the YearEnd local currency Clean MTM */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp2.CleanPresentValue *
+					 (SELECT avg(FX1.ExchangeRate)
+					  FROM Star.Fact_ExchangeRate FX1
+					  WHERE FX1.TimeID = fp2.TimeID
+						AND FX1.CurrencyID =fp2.CurrencyID
+			) ELSE fp2.CleanPresentValue END, 2) 
+			AS YE_Localccy_CleanPV,
+/*END Local Ccy Clean MTM*/
+
+
+/* Accrued Interest */
+         round
+		(
+			CASE WHEN cd.Code != 'EUR' THEN fp.AccruedInterest *
+                 (SELECT avg(FX1.ExchangeRate)
+                  FROM Star.Fact_ExchangeRate FX1
+                  WHERE FX1.TimeID = fp.TimeID
+                    AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.AccruedInterest END, 2
+		) 
+		AS Current_Localccy_Accrued_Int,
+
+ 
+/*Calculate the Previous local currency Accrued Interest */
+
+         round
+		(
+			CASE WHEN cd.Code != 'EUR' THEN fp1.AccruedInterest *
+                 (SELECT avg(FX1.ExchangeRate)
+                  FROM Star.Fact_ExchangeRate FX1
+                  WHERE FX1.TimeID = fp1.TimeID
+                    AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.AccruedInterest END, 2
+		) 
+		AS Previous_Localccy_Accrued_Int,
+      
+ /* Calculate the YearEnd local currency Accrued Interest */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp2.AccruedInterest *
+					 (SELECT avg(FX1.ExchangeRate)
+					  FROM Star.Fact_ExchangeRate FX1
+					  WHERE FX1.TimeID = fp2.TimeID
+						AND FX1.CurrencyID =fp2.CurrencyID
+			) ELSE fp2.AccruedInterest END, 2) 
+			AS YE_Localccy_Accrued_Int,
+/* END Local Ccy Accrued Interest */
+
+
+
+
+/* Local Ccy Dirty Pv */
+			 round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp.DirtyPresentValue *
+					 (SELECT avg(FX1.ExchangeRate)
+					  FROM Star.Fact_ExchangeRate FX1
+					  WHERE FX1.TimeID = fp.TimeID
+						AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.DirtyPresentValue END, 2
+			) 
+			AS Current_Localccy_Dirty_PV,
+
+ 
+
+/*Calculate the Previous local currency Dirty PV*/
+
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp1.DirtyPresentValue *
+					 (SELECT avg(FX1.ExchangeRate)
+					  FROM Star.Fact_ExchangeRate FX1
+					  WHERE FX1.TimeID = fp1.TimeID
+						AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.DirtyPresentValue END, 2
+			) 
+			AS Previous_Localccy_Dirty_PV,
+      
+ /* Calculate the YearEnd local currency Dirty PV*/
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp2.DirtyPresentValue *
+					 (SELECT avg(FX1.ExchangeRate)
+					  FROM Star.Fact_ExchangeRate FX1
+					  WHERE FX1.TimeID = fp2.TimeID
+						AND FX1.CurrencyID =fp2.CurrencyID) ELSE fp2.DirtyPresentValue END, 2
+			) 
+			AS YE_Localccy_Dirty_PV,
+/* END Dirty Local PV */
+
+
+
+
+/* Local Ccy Cummulative Cashflow*/
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp.CummulatedCashflow *
+                 (SELECT avg(FX1.ExchangeRate)
+                  FROM Star.Fact_ExchangeRate FX1
+                  WHERE FX1.TimeID = fp.TimeID
+                    AND FX1.CurrencyID =fp.CurrencyID) ELSE fp.CummulatedCashflow END, 2
+			) 
+			AS Current_Localccy_Cum_Cashflow,
+
+ 
+/*Calculate the Previous local currency Cummulative Cashflow */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp1.CummulatedCashflow *
+                 (SELECT avg(FX1.ExchangeRate)
+                  FROM Star.Fact_ExchangeRate FX1
+                  WHERE FX1.TimeID = fp1.TimeID
+                    AND FX1.CurrencyID =fp1.CurrencyID) ELSE fp1.CummulatedCashflow END, 2
+			) 
+			AS Previous_Localccy_Cum_Cashflow,
+	      
+ /* Calculate the YearEnd local currency Cummulative Cashflow */
+			round
+			(
+				CASE WHEN cd.Code != 'EUR' THEN fp2.CummulatedCashflow *
+					 (SELECT avg(FX1.ExchangeRate)
+					  FROM Star.Fact_ExchangeRate FX1
+					  WHERE FX1.TimeID = fp2.TimeID
+						AND FX1.CurrencyID =fp2.CurrencyID
+			) ELSE fp2.CummulatedCashflow END, 2) 
+			AS YE_Localccy_Cum_Cashflow,
+/* END Local Ccy Cummulative Cashflow*/
+
+
+
+
+
+'xxxxx_USD Values' as 'xxxxx_USD_PnL_Elements',
+/*CLEAN MTMs in $$$ USD --> 3 of them: Current, Previous, Year.End
+Calculate the Clean MTM in USD */
+           round
+			( fp.CleanPresentValue *
+                   (SELECT avg(FX.ExchangeRate)
+                    FROM Star.Fact_ExchangeRate FX
+                    WHERE FX.TimeID = fp.TimeID
+                      AND FX.CurrencyID = 2) 
+			, 2) 
+	AS 'USD_CleanPV',
+
+
+/* Previous Value USD */
+           round
+			( fp1.CleanPresentValue *
+                   (SELECT avg(FX1.ExchangeRate)
+                    FROM Star.Fact_ExchangeRate FX1
+                    WHERE FX1.TimeID = fp1.TimeID
+                      AND FX1.CurrencyID = 2) 
+			, 2) 
+	AS 'Previous_USD_CleanPV',
+
+
+/* Year End Value USD */
+           round
+			( fp2.CleanPresentValue *
+                   (SELECT avg(FX2.ExchangeRate)
+                    FROM Star.Fact_ExchangeRate FX2
+                    WHERE FX2.TimeID = fp2.TimeID
+                      AND FX2.CurrencyID = 2) 
+			, 2) 
+	AS 'YearEnd_USD_CleanPV',
+/* END $ USD Clean PVs*/
+
+
+/* USD Accrued Interest*/
+			   round
+				( fp.AccruedInterest *
+					   (SELECT avg(FX.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX
+						WHERE FX.TimeID = fp.TimeID
+						  AND FX.CurrencyID = 2) 
+				, 2) 
+		AS 'USD_Accrued_Int',
+
+
+/* Previous Value USD */
+			   round
+				( fp1.AccruedInterest *
+					   (SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						WHERE FX1.TimeID = fp1.TimeID
+						  AND FX1.CurrencyID = 2) 
+				, 2) 
+		AS 'Previous_USD_Accrued_Int',
+
+
+/* Year End Value USD */
+			   round
+				( fp2.AccruedInterest *
+					   (SELECT avg(FX2.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX2
+						WHERE FX2.TimeID = fp2.TimeID
+						  AND FX2.CurrencyID = 2) 
+				, 2) 
+		AS 'YearEnd_USD_Accrued_Int',
+/* END USD Accrued Interest*/
+
+
+/* USD Dirty PV*/
+			   round
+				( fp.DirtyPresentValue *
+					   (SELECT avg(FX.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX
+						WHERE FX.TimeID = fp.TimeID
+						  AND FX.CurrencyID = 2) 
+				, 2) 
+		AS 'USD_Dirty_PV',
+
+
+/* Previous Value USD */
+			   round
+				( fp1.DirtyPresentValue *
+					   (SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						WHERE FX1.TimeID = fp1.TimeID
+						  AND FX1.CurrencyID = 2) 
+				, 2) 
+		AS 'Previous_USD_Dirty_PV',
+
+
+/* Year End Value USD */
+			   round
+				( fp2.DirtyPresentValue *
+					   (SELECT avg(FX2.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX2
+						WHERE FX2.TimeID = fp2.TimeID
+						  AND FX2.CurrencyID = 2) 
+				, 2) 
+		AS 'YearEnd_USD_Dirty_PV',
+/* END USD Dirty PV*/
+
+
+/* USD Cummulative Cashflow*/
+			   round
+				( fp.CummulatedCashflow *
+					   (SELECT avg(FX.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX
+						WHERE FX.TimeID = fp.TimeID
+						  AND FX.CurrencyID = 2) 
+				, 2) 
+		AS 'USD_Cum_Cashflow',
+
+
+/* Previous Value USD */
+			   round
+				( fp1.CummulatedCashflow *
+					   (SELECT avg(FX1.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX1
+						WHERE FX1.TimeID = fp1.TimeID
+						  AND FX1.CurrencyID = 2) 
+				, 2) 
+		AS 'Previous_USD_Cum_Cashflow',
+
+
+/* Year End Value USD */
+			   round
+				( fp2.CummulatedCashflow *
+					   (SELECT avg(FX2.ExchangeRate)
+						FROM Star.Fact_ExchangeRate FX2
+						WHERE FX2.TimeID = fp2.TimeID
+						  AND FX2.CurrencyID = 2) 
+				, 2) 
+		AS 'YearEnd_USD_Cum_Cashflow',
+/* END USD Cummulative Cashflow*/
+
+
+
+
+
+'xxxxx_Euro Values' as 'xxxxx_Euro_Elements',
+/* ***********************************************
+*CLEAN MTMs in EURO **> 3 of them: Current, Previous, Year.End
+
+Calculate the Clean MTM in USD */
+			fp.CleanPresentValue AS 'Current_Eur_PV',
+			fp1.CleanPresentValue AS 'Previous_Eur_PV',
+			fp2.CleanPresentValue AS 'YE_Eur_PV',
+
+
+ /*Euro Accrued Interest */     
+			fp.AccruedInterest AS 'Current_Eur_Accrued_interest',
+			fp1.AccruedInterest AS 'Previous_Eur_Accrued_interest',
+			fp2.AccruedInterest AS 'YE_Eur_Accrued_interest',
+
+		
+/* Euro Dirty PV */
+			fp.DirtyPresentValue AS 'Current_Eur_Dirty_PV',
+			fp1.DirtyPresentValue AS 'Previous_Eur_Dirty_PV',
+			fp2.DirtyPresentValue AS 'YE_Eur_Dirty_PV',
+
+
+/* Euro Cashflow */	
+			fp.CummulatedCashflow AS 'Current_Eur_Cum_Cashflow',
+			fp1.CummulatedCashflow AS 'Previous_Eur_Cum_Cashflow',
+			fp2.CummulatedCashflow AS 'YE_Eur_Cum_Cashflow',
+/*END Euro PnL Elements*/
+
+
+
+	
+
+/* Euro DTD PnL Measures */
+'xxxxx_System_PnL_Euro' as 'xxxxx_System_PnL_Euro_Flag',
+			fp.PnlTotalDtd AS 'Current_Eur_PNL_DTD',
+			fp1.PnlTotalDtd AS 'Previous_Eur_PNL_DTD',
+			fp2.PnlTotalDtd AS 'YE_Eur_PNL_DTD',
+			
+
+/* Euro YTD PnL Measures */
+			fp.PnlTotalYtd AS 'Current_Eur_PNL_YTD',
+			fp1.PnlTotalYtd AS 'Previous_Eur_PNL_YTD',
+			fp2.PnlTotalYtd AS 'YE_Eur_PNL_YTD',
+
+
+
+
+
+/* 
+*
+*
+*
+
+Create DELTAs for Various PnL Elements 
+
+*
+*
+*
+*/
+'Delta_Euro' AS 'Delta_EuroFlag',
+
+
+/* DELTA DTD Euro VALUES */
+	fp.CleanPresentValue - fp1.CleanPresentValue AS 'Delta_Euro_DTD_Clean_PV',
+	fp.DirtyPresentValue - fp1.DirtyPresentValue AS 'Delta_Euro_DTD_Dirty_PV',
+	fp.AccruedInterest - fp1.AccruedInterest AS 'Delta_Euro_DTD_Accrued_Int', 
+	fp.CummulatedCashflow - fp1.CummulatedCashflow AS 'Delta_Euro_DTD_CumCashflow_PV',
+
+
+
+/* DELTA YTD Euro VALUES */
+	fp.CleanPresentValue - fp2.CleanPresentValue AS 'Delta_Euro_YTD_Clean_PV',
+	fp.DirtyPresentValue - fp2.DirtyPresentValue AS 'Delta_Euro_YTD_Dirty_PV',
+	fp.AccruedInterest - fp2.AccruedInterest AS 'Delta_Euro_YTD_Accrued_Int',
+	fp.CummulatedCashflow - fp2.CummulatedCashflow AS 'Delta_Euro_YTD_CumCashflow_PV',
+     
+
+
+ 
+/* 
+USD Deltas
+NOW DO THE SAME DELTAs for USD Measures	*/
+'USD_Delta' AS 'USD_Delta_Flag',
+
+/* DELTA DTD USD VALUES */	
+	(fp.CleanPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.CleanPresentValue *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2))
+AS 'Delta_Usd_DTD_Clean_PV',
+	
+	(fp.DirtyPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.DirtyPresentValue *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2)) 
+AS 'Delta_Usd_DTD_Dirty_PV',
+	
+	(fp.AccruedInterest * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.AccruedInterest *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2))
+AS 'Delta_Usd_DTD_Accrued_Int',
+	
+	(fp.CummulatedCashflow * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 - (fp1.CummulatedCashflow *(SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp1.TimeID AND FX1.CurrencyID = 2)) 
+AS 'Delta_Usd_DTD_CumCashflow_PV',
+
+
+
+
+/* DELTA YTD USD VALUES */ 
+		(fp.CleanPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 -  (fp2.CleanPresentValue *(SELECT avg(FX2.ExchangeRate) FROM Star.Fact_ExchangeRate FX2 WHERE FX2.TimeID = fp2.TimeID AND FX2.CurrencyID = 2) )
+AS 'Delta_Usd_YTD_Clean_PV',
+	
+		(fp.DirtyPresentValue * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+	 -  (fp2.DirtyPresentValue *(SELECT avg(FX2.ExchangeRate) FROM Star.Fact_ExchangeRate FX2 WHERE FX2.TimeID = fp2.TimeID AND FX2.CurrencyID = 2) )
+AS 'Delta_Usd_YTD_Dirty_PV',
+	
+		(fp.AccruedInterest * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+		-  (fp2.AccruedInterest *(SELECT avg(FX2.ExchangeRate) FROM Star.Fact_ExchangeRate FX2 WHERE FX2.TimeID = fp2.TimeID AND FX2.CurrencyID = 2) )
+AS 'Delta_Usd_YTD_Accrued_Int',
+	
+		(fp.CummulatedCashflow * (SELECT avg(FX1.ExchangeRate) FROM Star.Fact_ExchangeRate FX1 WHERE FX1.TimeID = fp.TimeID AND FX1.CurrencyID = 2))
+		-  (fp2.CummulatedCashflow *(SELECT avg(FX2.ExchangeRate) FROM Star.Fact_ExchangeRate FX2 WHERE FX2.TimeID = fp2.TimeID AND FX2.CurrencyID = 2) )
+AS 'Delta_Usd_YTD_CumCashflow_PV',
+/* END DELTA YTD USD VALUES */
+
+
+
+/* Version Change Flag */
+--		CASE
+--             WHEN dd1.TradeVersion <> dd.TradeVersion THEN 'version change'
+--             ELSE 'no version change'
+--         END AS version_change_flag ,
+--         ---------------------------------
+
+/* New/Old Flag */
+'old' AS new_trade_flag INTO #temp_pnl_old
+
+
+  FROM Star.Fact_Performance AS fp ,
+       Star.Dimension_Desk AS dd ,
+       Star.Fact_Performance AS fp1,
+       Star.Dimension_Desk AS dd1,
+       Star.Fact_Performance AS fp2,
+       Star.Dimension_Desk AS dd2,
+       Star.Dimension_Currency AS cd WHERE fp.DeskID=dd.DeskID
+  
+		AND fp.CurrencyID = cd.CurrencyID
+		AND fp1.CurrencyID = cd.CurrencyID
+		AND fp2.CurrencyID = cd.CurrencyID
+		AND fp1.DeskID=dd1.DeskID
+		AND fp2.DeskID=dd2.DeskID
+		AND fp.TimeID = @Reporting_Date
+		AND fp1.TimeID = @previous_Date
+		AND fp2.TimeID = @Year_End_Date
+		AND dd1.Company = dd.Company
+		AND dd1.TradeID =dd.TradeID
+		AND dd2.TradeID =dd.TradeID
+		AND fp1.DeskID=dd1.DeskID
+		
+		AND dd.Company IN  /* Exclude Non NY Relevant Companies */
+			(
+				Select * from #TheseCompanies  
+			)
+		AND dd.Desk NOT in /* Exclude old desks */
+			(
+				Select * from #IgnoreDesks
+			)
+
+
+/* 
+
+
+TABLES COMPLETE FOR THE TIME PERIODS
+
+
+*/
+
+
+/*JOIN THE 3 TEMP TABLES */
+
+
+SELECT *
+
+INTO #temp_pnl_FULL_LIST
+
+FROM #temp_pnl_old
+
+UNION ALL
+
+SELECT * FROM #temp_pnl_trades_this_year
+
+UNION ALL
+
+SELECT * FROM #temp_pnl_new_trades_today
+
+
+
+
+
+
+/* Now Drop these Temp tables that are no longer used
+*/
+
+DROP TABLE #temp_pnl_old
+DROP TABLE #trades_last_year
+DROP TABLE #temp_pnl_trades_this_year
+DROP TABLE #temp_pnl_new_trades_today
+
+/*
+
+
+NOW Look at Bond Positions by
+
+Company + Desk + Security Id to determine if position 
+is currently live
+
+
+*/
+
+
+
+/* This section uses 3 temp tables - lets ensure we drop the old one */
+IF OBJECT_ID('tempdb..#bond_temp_trades') IS  not NULL 
+DROP TABLE #bond_temp_trades
+
+IF OBJECT_ID('tempdb..#bond_temp_trades1') IS  not NULL 
+DROP TABLE #bond_temp_trades1
+
+IF OBJECT_ID('tempdb..#temp_secID_that_matter') IS  not NULL 
+DROP TABLE #temp_secID_that_matter
+
+
+
+
+/* 3 steps here*/
+
+select 
+				dd.Company,
+				dd.Desk,
+				(dd.Company + '_' + dd.Desk + '_' + dd.SecurityID ) AS LookupCode,
+
+				fp.CleanPresentValue , 
+						   CASE
+							   WHEN cd.Code != 'EUR' THEN
+									  (SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+
+									   FROM Star.Fact_ExchangeRate FX1
+									   WHERE FX1.TimeID = fp.TimeID
+										 AND FX1.CurrencyID =fp.CurrencyID)
+							   ELSE 1
+						   END AS Current_FX_Rate,
+				dd.SecurityID as secID
+
+				into #bond_temp_trades
+
+				from
+				Star.Fact_Performance AS fp,
+						Star.Dimension_Desk AS dd ,
+						Star.Dimension_Currency AS cd 
+
+				WHERE 
+					fp.DeskID=dd.DeskID
+					AND dd.TradeType = 'BOND_TR'
+					AND fp.CurrencyID = cd.CurrencyID
+					AND fp.TimeID = @Reporting_Date
+					AND  dd.Company IN  /* Exclude Non NY Relevant Companies */
+						(
+						Select * from #TheseCompanies   
+						)
+					AND dd.Desk NOT in /* Exclude old desks */
+						(
+							Select * from #IgnoreDesks
+						)
+
+/* Now temp table to aggregate by lookup code and then PV */
+select	
+				LookupCode,
+				sum(CleanPresentValue* Current_FX_Rate) as cleanPV , 
+				secID
+
+
+				into #bond_temp_trades1
+				from #bond_temp_trades
+				group by LookupCode, secID
+
+
+
+select 
+
+				LookupCode as 'Bond_LookupCode', 'Live Bond Position' as 'BondLiveFlag'
+				into #temp_secID_that_matter
+				from #bond_temp_trades1 where abs(round(cleanPV,0)) > 1  
+/* END OF BOND POSITION CHECK*/
+
+
+
+
+
+
+
+
+
+
+
+/* Now want to bring in bond market prices
+
+We are not looking at positions across company & desks for this
+Will calculate it on overall pv/notional
+*/
+
+IF OBJECT_ID('tempdb..#bond_temp_trades_price') IS  not NULL 
+DROP TABLE #bond_temp_trades_price
+
+IF OBJECT_ID('tempdb..#bond_temp_trades1_price') IS  not NULL 
+DROP TABLE #bond_temp_trades1_price
+
+IF OBJECT_ID('tempdb..#temp_secID_that_matter_price') IS  not NULL 
+DROP TABLE #temp_secID_that_matter_price
+
+select 
+			dd.SecurityID as secID,				
+			fp.CurrentNotional*sign(fp.CurrentNotional) as CurrentNotional_Euro,
+			fp.CleanPresentValue*sign(fp.CleanPresentValue) AS Current_Clean_PV ,		 
+					CASE
+						WHEN cd.Code != 'EUR' THEN
+							(
+							SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+								FROM Star.Fact_ExchangeRate FX1
+								WHERE FX1.TimeID = fp.TimeID
+								AND FX1.CurrencyID =fp.CurrencyID
+							)  ELSE 1
+					END AS Current_FX_Rate,
+
+			/* Prev Day */
+			fp1.CurrentNotional*sign(fp1.CurrentNotional) as PrevNotional_Euro,
+			fp1.CleanPresentValue*sign(fp1.CleanPresentValue) as Prev_Clean_PV,		 
+					CASE
+						WHEN cd.Code != 'EUR' THEN
+							(
+							SELECT avg(FX1.ExchangeRate) -- select the FX Rate when currrency isnt Eur - else if Eur = 1
+								FROM Star.Fact_ExchangeRate FX1
+								WHERE FX1.TimeID = fp1.TimeID
+								AND FX1.CurrencyID =fp1.CurrencyID
+							)  ELSE 1
+					END AS Prev_FX_Rate
+			/* End Prev Day*/
+				
+into #bond_temp_trades_price
+
+			from
+								--
+				Star.Fact_Performance AS fp ,
+				Star.Dimension_Desk AS dd ,
+				Star.Fact_Performance AS fp1,
+				Star.Dimension_Desk AS dd1,
+				Star.Dimension_Currency AS cd 
+
+				WHERE fp.DeskID=dd.DeskID
+				AND fp.CurrencyID = cd.CurrencyID
+				AND fp1.CurrencyID = cd.CurrencyID
+				AND fp1.DeskID=dd1.DeskID
+				AND fp.TimeID = @Reporting_Date
+				AND fp1.TimeID = @previous_Date
+				AND dd1.Company = dd.Company
+				AND dd1.TradeID =dd.TradeID
+				AND fp1.DeskID=dd1.DeskID
+								--
+				AND dd.TradeType = 'BOND_TR'
+				AND dd.Company IN  /* Exclude Non NY Relevant Companies */
+					(
+						Select * from #TheseCompanies   
+					)
+				 
+					AND dd.Desk NOT in /* Exclude old desks */
+					(
+						Select * from #IgnoreDesks
+					)
+			/* Now temp table to aggregate by lookup code and then PV */
+select	
+
+							secID,
+							sum(Current_Clean_PV * Current_FX_Rate) as cleanPV_Local , 
+							sum( CurrentNotional_Euro  * Current_FX_Rate) as CleanNotionalLocal,
+							sum( Prev_Clean_PV * Prev_FX_Rate) as PrevCleanPV_Local, 
+							sum( PrevNotional_Euro  * Prev_FX_Rate) as PrevNotional_Local
+
+							into #bond_temp_trades1_price
+							from #bond_temp_trades_price
+							group by  secID 
+
+select 
+							secID,  
+							
+							case
+								when ABS(CleanNotionalLocal) > 1 then((cleanPV_Local/CleanNotionalLocal)*100)
+								ELSE '0'
+							end as Current_MarketPrice,
+
+							case
+								when ABS(PrevNotional_Local) > 1 THEN ((PrevCleanPV_Local/PrevNotional_Local)*100) 
+								ELSE '0'
+							END as Prev_MarketPrice
+
+							into #temp_secID_that_matter_price
+							from #bond_temp_trades1_price where Round(cleanPV_Local,0)  <>0  
+
+
+
+
+
+
+
+/*End of Bond Price Check*/
+
+
+
+
+
+
+/* Now Some Tables to highlight Empty DealID Packages across desks... */
+
+/* 3 steps here
+
+ Empty Desk & Deal ID Combo Flag
+*/
+
+
+IF OBJECT_ID('tempdb..#dealid_temp_trades') IS  not NULL 
+DROP TABLE #dealid_temp_trades
+
+
+
+select 
+
+		distinct (dd.Desk + '_' + dd.DealID ) AS XD_DealID_LookupCode, 
+		ABS(SUM(round(fp.CleanPresentValue,0))) AS 'Val Check',
+			
+		CASE 
+			WHEN 
+				ABS(SUM(round(fp.CleanPresentValue,0)))<1 then 'Empty XD'
+				ELSE 'Live XD'
+				END AS 'XD_Flag'
+				
+
+				into #dealid_temp_trades
+
+				from
+				Star.Fact_Performance AS fp,
+						Star.Dimension_Desk AS dd ,
+						Star.Dimension_Currency AS cd 
+
+				WHERE 
+					fp.DeskID=dd.DeskID
+					AND fp.CurrencyID = cd.CurrencyID
+					AND fp.TimeID = @Reporting_Date
+					
+					AND	dd.Company IN  /* Exclude Non NY Relevant Companies */
+						(
+							Select * from #TheseCompanies    
+						)
+					AND dd.Desk NOT in /* Exclude old desks */
+						(
+							Select * from #IgnoreDesks
+						)	
+
+GROUP BY (dd.Desk + '_' + dd.DealID )
+/* END Empty XD - Desk DealId Check Flag
+*/
+
+
+
+/* Now do the XC -- deal id company check
+*/
+
+
+IF OBJECT_ID('tempdb..#Company_dealid_temp_trades') IS  not NULL 
+DROP TABLE #Company_dealid_temp_trades
+
+
+
+select 
+
+		distinct (dd.Company + '_' + dd.DealID ) AS XC_DealID_LookupCode, 
+		ABS(SUM(round(fp.CleanPresentValue,0))) AS 'Val Check',
+			
+		CASE 
+			WHEN 
+				ABS(SUM(round(fp.CleanPresentValue,0)))<1 then 'Empty XC'
+				ELSE 'Live XC'
+				END AS 'XC_Flag'
+				
+
+				into #Company_dealid_temp_trades
+
+				from
+				Star.Fact_Performance AS fp,
+						Star.Dimension_Desk AS dd ,
+						Star.Dimension_Currency AS cd 
+
+				WHERE 
+					fp.DeskID=dd.DeskID
+					AND fp.CurrencyID = cd.CurrencyID
+					AND fp.TimeID = @Reporting_Date
+					AND	dd.Company IN  /* Exclude Non NY Relevant Companies */
+						(
+							Select * from #TheseCompanies    
+						)
+					AND dd.Desk NOT in /* Exclude old desks */
+						(
+							Select * from #IgnoreDesks
+						)	
+
+GROUP BY (dd.Company + '_' + dd.DealID )
+
+
+
+
+
+
+
+
+
+Select *, 
+			CASE
+			WHEN TradeType = 'BOND_TR' THEN
+--'ok'
+ (#temp_pnl_FULL_LIST.Company +  '_' + #temp_pnl_FULL_LIST.Desk + '_' + #temp_pnl_FULL_LIST.Security)
+ELSE 'Non Bond'
+End as 'Bond_Reference_Position'
+
+into #temp_pnl_FULL_LIST_withBondLookup
+from #temp_pnl_FULL_LIST
+
+ORDER BY CASE WHEN new_trade_flag = 'new_today' THEN '1'
+              WHEN new_trade_flag = 'new_trades_this_year' THEN '2'
+              ELSE new_trade_flag END 
+
+DROP TABLE #temp_pnl_FULL_LIST
+
+
+SELECT * 
+
+into #Final_Table_All
+	
+
+		FROM #temp_pnl_FULL_LIST_withBondLookup
+		LEFT OUTER JOIN #temp_secID_that_matter 
+		on #temp_pnl_FULL_LIST_withBondLookup.Bond_Reference_Position = #temp_secID_that_matter.Bond_LookupCode
+
+		LEFT OUTER JOIN #temp_secID_that_matter_PRICE 
+		on #temp_pnl_FULL_LIST_withBondLookup.Security = #temp_secID_that_matter_PRICE.SECID
+
+
+
+
+
+
+DROP TABLE #temp_pnl_FULL_LIST_withBondLookup
+DROP TABLE #bond_temp_trades
+DROP TABLE #bond_temp_trades1
+DROP TABLE #bond_temp_trades_price
+DROP TABLE #bond_temp_trades1_price
+DROP TABLE #temp_secID_that_matter_PRICE
+DROP TABLE #temp_secID_that_matter
+
+
+
+
+
+
+ALTER TABLE #Final_Table_All 
+
+ADD Asset_Liability_Flag VARCHAR(200)
+
+
+UPDATE #Final_Table_All SET Asset_Liability_Flag = 
+(
+CASE 
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'BOND_TR' AND Internal_External = 'External Issuance'
+				THEN 'Asset'
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'BOND_TR' AND Internal_External = 'Own Issuance'				
+				THEN 'Liability'
+	
+	/* Assign the Money Market Trades */
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'MM' AND Internal_External = 'External'  AND Current_Localccy_CleanPV >= 0
+				THEN 'Asset'
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'MM'  AND Internal_External = 'External'  AND Current_Localccy_CleanPV < 0
+				THEN 'Liability'
+	
+
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'MM'  AND Internal_External = 'Internal'  AND Current_Localccy_CleanPV >= 0
+				THEN 'Intergroup Asset'
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'MM'  AND Internal_External = 'Internal'  AND Current_Localccy_CleanPV < 0
+				THEN 'Intergroup Liability'
+
+
+
+	/* Assign the Repo Trades */
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'REPO_TR'  AND Internal_External = 'External' AND Current_Localccy_CleanPV >= 0
+				THEN 'Asset'
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'REPO_TR'  AND Internal_External = 'External' AND Current_Localccy_CleanPV < 0
+				THEN 'Liability'
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'REPO_TR'  AND Internal_External = 'Internal' AND Current_Localccy_CleanPV >= 0
+				THEN 'Intergroup Asset'
+	WHEN On_Off_BalanceSheet = 'Balance Sheet' AND TradeType = 'REPO_TR'  AND Internal_External = 'Internal' AND Current_Localccy_CleanPV < 0
+				THEN 'Intergroup Liability'
+
+
+	WHEN On_Off_BalanceSheet <> 'Balance Sheet'
+				THEN 'Ignore'
+ELSE 'Not Defined'				
+END
+
+) ;
+
+
+
+ 
+SELECT 	* ,
+
+CASE 
+	WHEN TradeType = 'FXSPOT'  
+				THEN '0'
+	ELSE ("Delta_Usd_DTD_Clean_PV" +	"Delta_Usd_DTD_Accrued_Int"	+ "Delta_Usd_DTD_CumCashflow_PV")
+END AS 'Usd_DTD_PnL' ,
+
+
+CASE 
+	WHEN TradeType = 'FXSPOT'  
+				THEN '0'
+	ELSE ("Delta_Usd_YTD_Clean_PV" +	"Delta_Usd_YTD_Accrued_Int"	+ "Delta_Usd_YTD_CumCashflow_PV")
+END AS 'Usd_YTD_PnL' ,
+
+
+
+CASE
+		WHEN On_Off_BalanceSheet = 'Balance Sheet' AND  Current_Localccy_CleanPV > 0 
+				THEN  (CurrentNotional_Euro *  Current_FX_Rate) * 1
+		WHEN On_Off_BalanceSheet = 'Balance Sheet' AND  Current_Localccy_CleanPV < 0 
+				THEN  (CurrentNotional_Euro *  Current_FX_Rate) * -1
+		ELSE '0'
+END AS 'Local_Current_Notional_BalanceSheet',
+
+CASE
+		WHEN On_Off_BalanceSheet = 'Balance Sheet' AND  Previous_Localccy_CleanPV > 0
+				THEN  ( Previous_CurrentNotional_Euro  *   Previous_FX_Rate ) * 1
+		WHEN On_Off_BalanceSheet = 'Balance Sheet' AND  Previous_Localccy_CleanPV < 0
+				THEN  ( Previous_CurrentNotional_Euro  *   Previous_FX_Rate ) * -1
+		ELSE '0'
+END AS 'Local_Previous_Notional_BalanceSheet',
+
+
+CASE
+		WHEN On_Off_BalanceSheet = 'Balance Sheet' AND  YE_Localccy_CleanPV > 0  
+				THEN  ( YE_CurrentNotional_Euro   *    YE_FX_Rate  ) * 1
+		WHEN On_Off_BalanceSheet = 'Balance Sheet' AND  YE_Localccy_CleanPV < 0  
+				THEN  ( YE_CurrentNotional_Euro   *    YE_FX_Rate  ) * -1
+		ELSE '0'
+END AS 'Local_YE_Notional_BalanceSheet'
+
+
+into #FinalTable_All_Sorted 
+from #Final_Table_All
+
+
+
+
+/* Finished Query Workings
+*/
+
+-- On the fly calc to re-create what the FX sell out trade number should be
+ALTER TABLE #FinalTable_All_Sorted 
+
+ADD Prev_FX_CalcEuro VARCHAR(200)
+
+
+UPDATE #FinalTable_All_Sorted SET Prev_FX_CalcEuro =  
+	(
+	CASE
+			WHEN #FinalTable_All_Sorted.new_trade_flag = 'old'
+				THEN (
+						((#FinalTable_All_Sorted.YE_Localccy_Cum_Cashflow + #FinalTable_All_Sorted.YE_Localccy_Dirty_PV) / #FinalTable_All_Sorted.YE_FX_Rate)
+						-
+						((#FinalTable_All_Sorted.YE_Localccy_Cum_Cashflow + #FinalTable_All_Sorted.YE_Localccy_Dirty_PV) / #FinalTable_All_Sorted.Previous_FX_Rate)
+					 )
+			ELSE '0'
+	END 
+	)
+
+
+
+
+
+
+ALTER TABLE #FinalTable_All_Sorted 
+
+ADD YTD_FX_CalcEuro VARCHAR(200)
+
+
+UPDATE #FinalTable_All_Sorted SET YTD_FX_CalcEuro =  
+	(
+	CASE
+			WHEN #FinalTable_All_Sorted.new_trade_flag = 'old'
+				THEN (
+						((#FinalTable_All_Sorted.YE_Localccy_Cum_Cashflow + #FinalTable_All_Sorted.YE_Localccy_Dirty_PV) / #FinalTable_All_Sorted.YE_FX_Rate)
+						-
+						((#FinalTable_All_Sorted.YE_Localccy_Cum_Cashflow + #FinalTable_All_Sorted.YE_Localccy_Dirty_PV) / #FinalTable_All_Sorted.Current_FX_Rate)
+					 )
+			ELSE '0'
+	END 
+	)
+
+
+
+
+
+
+
+Select  #FinalTable_All_Sorted.*, #dealid_temp_trades.XD_Flag, #Company_dealid_temp_trades.XC_Flag
+
+into #FinalTable_All_Sorted_CorrectFX from #FinalTable_All_Sorted, #dealid_temp_trades,  #Company_dealid_temp_trades
+
+where  
+#FinalTable_All_Sorted.XD_LookupCode = #dealid_temp_trades.XD_DealID_LookupCode
+AND #FinalTable_All_Sorted.XC_LookupCode = #Company_dealid_temp_trades.XC_DealID_LookupCode
+
+
+
+IF OBJECT_ID('tempdb..#TheseCompanies') IS  not NULL 
+DROP TABLE #TheseCompanies
+
+
+IF OBJECT_ID('tempdb..#IgnoreDesks') IS  not NULL 
+DROP TABLE #IgnoreDesks
+
+
+DROP TABLE #Company_dealid_temp_trades
+
+DROP TABLE #dealid_temp_trades
+
+DROP TABLE #Final_Table_All
+
+
+
+Select * into #FinalOverallTable from #FinalTable_All_Sorted_CorrectFX
+
+
+
+-- Now A new YTD_EUR_PNL
+ALTER TABLE #FinalOverallTable 
+
+ADD New_YTDPnLEuro decimal(30,3)
+
+UPDATE #FinalOverallTable SET New_YTDPnLEuro =  
+	(
+	(#FinalOverallTable.YTD_FX_CalcEuro + #FinalOverallTable.Current_Eur_PNL_YTD)*1
+	)
+
+
+
+ALTER TABLE #FinalOverallTable 
+
+ADD Prev_YTDPnLEuro decimal(30,3)
+
+UPDATE #FinalOverallTable SET Prev_YTDPnLEuro =  
+	(
+	(#FinalOverallTable.Prev_FX_CalcEuro + #FinalOverallTable.Previous_Eur_PNL_YTD)*1
+	)
+
+
+
+
+ALTER TABLE #FinalOverallTable 
+
+ADD New_DTDPnLEuro decimal(30,3)
+
+UPDATE #FinalOverallTable SET New_DTDPnLEuro =  
+	(
+	(New_YTDPnLEuro - Prev_YTDPnLEuro )*1
+	)
+
+
+
+Select * from #FinalOverallTable
+
+
+
+

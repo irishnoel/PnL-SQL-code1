@@ -1,0 +1,2123 @@
+/*
+
+NEW YORK & SanSabia Marlin based sensitivity 
+
+Trade level - no tenor here
+
+*/	
+
+
+
+/*Original query 
+	This query brings in the sensi for the following risk types
+
+	1:	BMA
+	2:	CDS
+	3:	CS
+	4:	INF
+	5:	TS
+	6:	XOIS
+	7:	IR
+	8:	VEGA
+	9:	FX
+
+
+	*/
+
+
+	/*Create a company filter -- to look at these companies
+	Here though we will use the Short name instead of companies as certain adjustments dont have 
+	these company names added so not a relevant filter
+	star.dimension_entity
+
+	*/
+USE Reporting_DB_HRE
+
+
+declare @sql varchar(5000)
+ SELECT
+       @sql = isnull(@sql+';', '') + 'drop table ' + SUBSTRING(t.name, 1, CHARINDEX('___', t.name)-1)
+ FROM tempdb..sysobjects AS t
+ WHERE t.name LIKE '#%[_][_][_]%'
+ AND t.id =
+   OBJECT_ID('tempdb..' + SUBSTRING(t.name, 1, CHARINDEX('___', t.name)-1));
+ exec (@sql)
+
+
+
+	IF OBJECT_ID('tempdb..#SensiFinal') IS  not NULL 
+	DROP TABLE #SensiFinal
+
+	IF OBJECT_ID('tempdb..#sensi_today') IS  not NULL 
+	DROP TABLE #sensi_today_STEP1
+
+	IF OBJECT_ID('tempdb..#sensi_yesterday_STEP2') IS  not NULL 
+	DROP TABLE #sensi_yesterday_STEP2
+
+
+	IF OBJECT_ID('tempdb..#TheseCompanies') IS  not NULL 
+	DROP TABLE #TheseCompanies
+
+
+	create table #TheseCompanies (Company VARCHAR(MAX)) 
+
+	INSERT INTO #TheseCompanies (Company )
+	SELECT 'New York' 
+	--UNION ALL SELECT 'ACS' 
+
+
+
+	DECLARE
+	@asof AS integer
+
+	-- set the current reporting date 
+	-- if you want to manually set the asof date then just comment out the above and uncomment the below
+	SET @asof = (
+		SELECT
+			MAX(timeid)
+		FROM star.fact_performance
+	)
+
+	-- SET @asof = 20130930; -- format yyyymmdd 
+
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	1
+	CDS
+	CDS
+	CDS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+			SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS	Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS
+					Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS
+					LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS
+					POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer
+					AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS
+					Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'CDS'
+					AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS
+					Curvetype,
+					CAST(SUM(Sensi.creditdefaultswapsensitivity) AS float) AS
+					Sensi_eur
+
+INTO #sensi_today_STEP1
+
+				FROM star.fact_creditdefaultswapsensitivity_view Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW' , 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 D.parentcode,
+						 D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						 Mat.Years,
+						 D.securityid
+			
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	3
+	CS
+	CS
+	CS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+	 
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS	Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'CS' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.creditspreadsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_creditspreadsensitivity Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW' , 'PBB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 D.parentcode,
+						D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	4
+	INF
+	INF
+	INF
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+	 
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS
+					Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Company,
+					D.company AS Summitcompany,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'INF' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.inflationsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_inflationsensitivity_view Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW' , 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 D.parentcode,
+						D.ParentDeskID ,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	5
+	TS
+	TS
+	TS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+	 
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT --top 100 
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'TS' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.tenorspreadsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_tenorspreadsensitivity_view Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID ,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	6
+	XOIS
+	XOIS
+	XOIS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT --top 100 
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS
+					Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'XOIS' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.crosscurrencyspreadsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_crosscurrencyspreadsensitivity Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	7
+	IR
+	IR
+	IR
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					CASE
+						WHEN D.desk IS NULL OR
+							D.desk = '' THEN D.parentcode + '_' + A.summitcode
+						ELSE D.desk
+					END AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					CASE
+						WHEN D.tradetype IS NULL OR
+							D.tradetype = '' THEN D.code
+						ELSE D.tradetype
+					END AS Tradetype,
+					CASE
+						WHEN D.tradeid IS NULL OR
+							D.tradeid = '' THEN D.code
+						ELSE D.tradeid
+					END AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						WHEN D.desk = '' THEN (D.code + '_' + D.parentcode + '_' +
+							A.summitcode + '_'
+							+ c.code + '_' + d.company)
+						WHEN D.desk IS NULL THEN (D.code + '_' + D.parentcode + '_' +
+							A.summitcode +
+							'_'
+							+ c.code + '_' + d.company)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					------- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'IR' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.basispointvalue) AS float) AS Sensi_eur
+				FROM star.fact_basispointvalue_view Sensi
+				INNER JOIN star.dimension_attributetype AT
+					ON Sensi.attributetypeid = AT.attributetypeid
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND AT.coverpoolcode = 'NO'
+					AND AT.capitalinvestmentbookcode = 'NO'
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID ,
+						 A.code,
+						 CASE
+							 WHEN D.desk IS NULL OR
+								 D.desk = '' THEN D.parentcode + '_' + A.summitcode
+							 ELSE D.desk
+						 END,
+						 D.dealid,
+						 D.code,
+						 CASE
+							 WHEN D.tradetype IS NULL OR
+								 D.tradetype = '' THEN D.code
+							 ELSE D.tradetype
+						 END,
+						 CASE
+							 WHEN D.tradeid IS NULL OR
+								 D.tradeid = '' THEN D.code
+							 ELSE D.tradeid
+						 END,
+						 -- 
+						 CASE
+							 WHEN CHARINDEX('ADJ', D.code) > 0 THEN (
+								 D.code + '_' + c.code)
+							 WHEN D.desk = '' THEN (D.code + '_' + D.parentcode + '_' +
+								 A.summitcode + '_'
+								 + c.code + '_' + d.company)
+							 WHEN D.desk IS NULL THEN (D.code + '_' + D.parentcode + '_'
+								 +
+								 A.summitcode +
+								 '_'
+								 + c.code + '_' + d.company)
+							 ELSE (D.code + '_' + d.desk + '_' + c.code + '_' +
+								 d.company)
+						 END,
+						 -- 
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	8
+	VEGA
+	VEGA
+	VEGA
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT --top 100 
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + 'EUR')
+						ELSE (D.code + '_' + d.desk + '_' + 'EUR' + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					NULL AS Scenccy,
+					Mat.Years,
+					'VEGA' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.vegasensitivity) AS float) AS Sensi_eur
+				FROM star.fact_vegasensitivity Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PBB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.securityid,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END
+			) T
+			
+			;
+
+
+
+
+/*
+********************************
+********************************
+********************************
+********************************
+********************************
+
+
+NOW YESTERDAY
+
+********************************
+********************************
+********************************
+********************************
+********************************
+*/
+USE Reporting_DB_HRE
+	
+	DECLARE @prev_asof AS integer
+
+	-- set the current reporting date 
+	-- if you want to manually set the asof date then just comment out the above and uncomment the below
+	SET @prev_asof = (select  max(TimeID) from Star.Fact_Performance where TimeID <( select max(TimeID) from Star.Fact_Performance ))
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	1
+	CDS
+	CDS
+	CDS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+
+
+
+		SELECT
+				Sensi.timeid AS
+				ReportingDate,
+				D.parentcode AS
+				Portfolio,
+				D.ParentDeskID as ParentDeskId,
+				A.code AS
+				Accountingtreatment,
+				D.desk AS Desk,
+				D.dealid AS Dealid,
+				D.code AS Trade,
+				D.securityid,
+				D.tradetype AS
+				Tradetype,
+				D.tradeid AS Tradeid,
+				---- 
+				CASE
+					WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+					ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+				END AS
+				LookupCode,
+				----- 
+				CASE
+					WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+					ELSE D.securityid
+				END AS
+				POSITION,
+				E.shortname AS Entity,
+				D.company AS Company,
+				D.customer
+				AS Customer,
+				CASE
+					WHEN D.issuer IS NULL OR
+						D.issuer = '' THEN D.customer
+					ELSE D.issuer
+				END AS Issuer,
+				D.book AS Book,
+				D.rc AS Rc,
+				D.coverpoolcode AS
+				Coverpool,
+				C.code AS Scenccy,
+				Mat.Years,
+				'CDS'	AS Rf_type,
+				CASE
+					WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+					WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+					ELSE 'UNKNOWN'
+				END AS
+				Curvetype,
+				CAST(SUM(Sensi.creditdefaultswapsensitivity) AS float) AS
+				Sensi_eur
+
+INTO #sensi_yesterday_STEP2
+
+				FROM star.fact_creditdefaultswapsensitivity_view Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW' , 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 D.parentcode,
+						D.ParentDeskID ,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	3
+	CS
+	CS
+	CS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+	 
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS
+					Accountingtreatment,
+					D.desk AS
+					Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'CS' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.creditspreadsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_creditspreadsensitivity Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW' , 'PBB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 D.parentcode,
+						D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	4
+	INF
+	INF
+	INF
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+	 
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS
+					Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Company,
+					D.company AS Summitcompany,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'INF' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.inflationsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_inflationsensitivity_view Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW' , 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 D.parentcode,
+							D.ParentDeskID ,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	5
+	TS
+	TS
+	TS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+	 
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT --top 100 
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'TS' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.tenorspreadsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_tenorspreadsensitivity_view Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	6
+	XOIS
+	XOIS
+	XOIS
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT --top 100 
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS
+					Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'XOIS' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.crosscurrencyspreadsensitivity) AS float) AS Sensi_eur
+				FROM star.fact_crosscurrencyspreadsensitivity Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						 D.ParentDeskID,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	7
+	IR
+	IR
+	IR
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+
+
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					CASE
+						WHEN D.desk IS NULL OR
+							D.desk = '' THEN D.parentcode + '_' + A.summitcode
+						ELSE D.desk
+					END AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					CASE
+						WHEN D.tradetype IS NULL OR
+							D.tradetype = '' THEN D.code
+						ELSE D.tradetype
+					END AS Tradetype,
+					CASE
+						WHEN D.tradeid IS NULL OR
+							D.tradeid = '' THEN D.code
+						ELSE D.tradeid
+					END AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + c.code)
+						WHEN D.desk = '' THEN (D.code + '_' + D.parentcode + '_' +
+							A.summitcode + '_'
+							+ c.code + '_' + d.company)
+						WHEN D.desk IS NULL THEN (D.code + '_' + D.parentcode + '_' +
+							A.summitcode +
+							'_'
+							+ c.code + '_' + d.company)
+						ELSE (D.code + '_' + d.desk + '_' + c.code + '_' + d.company)
+					END AS LookupCode,
+					------- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					C.code AS Scenccy,
+					Mat.Years,
+					'IR' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.basispointvalue) AS float) AS Sensi_eur
+				FROM star.fact_basispointvalue_view Sensi
+				INNER JOIN star.dimension_attributetype AT
+					ON Sensi.attributetypeid = AT.attributetypeid
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_currency C
+					ON C.currencyid = Sensi.currencyid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND AT.coverpoolcode = 'NO'
+					AND AT.capitalinvestmentbookcode = 'NO'
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PfB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID,
+						 A.code,
+						 CASE
+							 WHEN D.desk IS NULL OR
+								 D.desk = '' THEN D.parentcode + '_' + A.summitcode
+							 ELSE D.desk
+						 END,
+						 D.dealid,
+						 D.code,
+						 CASE
+							 WHEN D.tradetype IS NULL OR
+								 D.tradetype = '' THEN D.code
+							 ELSE D.tradetype
+						 END,
+						 CASE
+							 WHEN D.tradeid IS NULL OR
+								 D.tradeid = '' THEN D.code
+							 ELSE D.tradeid
+						 END,
+						 -- 
+						 CASE
+							 WHEN CHARINDEX('ADJ', D.code) > 0 THEN (
+								 D.code + '_' + c.code)
+							 WHEN D.desk = '' THEN (D.code + '_' + D.parentcode + '_' +
+								 A.summitcode + '_'
+								 + c.code + '_' + d.company)
+							 WHEN D.desk IS NULL THEN (D.code + '_' + D.parentcode + '_'
+								 +
+								 A.summitcode +
+								 '_'
+								 + c.code + '_' + d.company)
+							 ELSE (D.code + '_' + d.desk + '_' + c.code + '_' +
+								 d.company)
+						 END,
+						 -- 
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 C.code,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 D.securityid
+			) T 
+
+	/*
+
+
+	*************************************************************************************
+	*************************************************************************************
+
+	8
+	VEGA
+	VEGA
+	VEGA
+
+
+	*************************************************************************************
+
+	*************************************************************************************
+	*/
+			UNION ALL
+			SELECT
+				*
+			FROM (
+				SELECT --top 100 
+					Sensi.timeid AS ReportingDate,
+					D.parentcode AS Portfolio,
+					D.ParentDeskID as ParentDeskId,
+					A.code AS Accountingtreatment,
+					D.desk AS Desk,
+					D.dealid AS Dealid,
+					D.code AS Trade,
+					D.securityid,
+					D.tradetype AS Tradetype,
+					D.tradeid AS Tradeid,
+					---- 
+					CASE
+						WHEN CHARINDEX('ADJ', D.code) > 0 THEN (D.code + '_' + 'EUR')
+						ELSE (D.code + '_' + d.desk + '_' + 'EUR' + '_' + d.company)
+					END AS LookupCode,
+					----- 
+					CASE
+						WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+						ELSE D.securityid
+					END AS POSITION,
+					E.shortname AS Entity,
+					D.company AS Company,
+					D.customer AS Customer,
+					CASE
+						WHEN D.issuer IS NULL OR
+							D.issuer = '' THEN D.customer
+						ELSE D.issuer
+					END AS Issuer,
+					D.book AS Book,
+					D.rc AS Rc,
+					D.coverpoolcode AS Coverpool,
+					NULL AS Scenccy,
+					Mat.Years,
+					'VEGA' AS Rf_type,
+					CASE
+						WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+						WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+						ELSE 'UNKNOWN'
+					END AS Curvetype,
+					CAST(SUM(Sensi.vegasensitivity) AS float) AS Sensi_eur
+				FROM star.fact_vegasensitivity Sensi
+				INNER JOIN star.dimension_desk D
+					ON D.deskid = Sensi.deskid
+				INNER JOIN star.dimension_curvetype Ct
+					ON Ct.curvetypeid = Sensi.curvetypeid
+				INNER JOIN star.dimension_entity E
+					ON E.entityid = Sensi.entityid
+				INNER JOIN star.dimension_accountingtreatment A
+					ON Sensi.accountingtreatmentid = A.accountingtreatmentid
+				INNER JOIN Star.Dimension_Maturity Mat on Sensi.MaturityID =  Mat.MaturityID 
+				WHERE Sensi.timeid = @prev_asof
+					AND E.shortname in ( Select * from #TheseCompanies) --in ( 'FMSW', 'PBB') 
+					AND D.levelname = 'Trade'
+					AND Ct.code IN ('CSPREAD', 'SWAPFLAT')
+				GROUP BY Sensi.timeid,
+						 E.code,
+						 D.parentcode,
+						D.ParentDeskID ,
+						 A.code,
+						 D.desk,
+						 D.dealid,
+						 D.code,
+						 D.securityid,
+						 D.tradetype,
+						 D.tradeid,
+						 CASE
+							 WHEN ISNULL(D.securityid, '') = '' THEN D.tradeid
+							 ELSE D.securityid
+						 END,
+						 E.shortname,
+						 D.company,
+						 D.customer,
+						 CASE
+							 WHEN D.issuer IS NULL OR
+								 D.issuer = '' THEN D.customer
+							 ELSE D.issuer
+						 END,
+						 D.book,
+						 D.rc,
+						 D.coverpoolcode,
+						Mat.Years,
+						 CASE
+							 WHEN Ct.code IN ('CURRSPREAD', 'MIXED', 'SPREAD') THEN 'RISK'
+							 WHEN Ct.code IN ('CSPREAD', 'SWAPFLAT') THEN 'TREASURY'
+							 ELSE 'UNKNOWN'
+						 END
+			) T
+			;
+
+
+
+--------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------
+
+
+
+
+--
+
+
+
+ALTER TABLE #sensi_today_STEP1 
+ADD Internal_External_Flag VARCHAR(200) NULL
+
+
+UPDATE #sensi_today_STEP1 SET #sensi_today_STEP1.Internal_External_Flag = 
+(
+		CASE 
+				WHEN #sensi_today_STEP1.TradeType = 'BOND_TR'  
+								THEN CASE 
+									WHEN LEFT(#sensi_today_STEP1.Issuer,4)='DPFA'	THEN 'Own Issuance'
+									WHEN #sensi_today_STEP1.Issuer='PFANDBKLUXSA'	THEN 'Own Issuance'
+									WHEN #sensi_today_STEP1.Issuer='PBILLULL'		THEN 'Own Issuance'
+									WHEN #sensi_today_STEP1.Issuer=NULL				THEN 'Check'
+									WHEN #sensi_today_STEP1.Issuer=''				THEN 'Check'
+								
+								ELSE 'External Issuance'
+								
+								END 
+					
+				ELSE CASE 
+					
+					WHEN LEFT(#sensi_today_STEP1.Customer,4)='DPFA'					THEN 'Internal'
+					WHEN CHARINDEX('ADJ', #sensi_today_STEP1.Trade) > 0 THEN 'Internal_Adjustment'
+								ELSE 'External'
+								
+								END 
+
+			END 
+);
+
+
+
+
+
+ALTER TABLE #sensi_yesterday_STEP2 
+ADD Internal_External_Flag VARCHAR(200) NULL
+
+
+UPDATE #sensi_yesterday_STEP2 SET #sensi_yesterday_STEP2.Internal_External_Flag = 
+(
+		CASE 
+				WHEN #sensi_yesterday_STEP2.TradeType = 'BOND_TR'  
+								THEN CASE 
+									WHEN LEFT(#sensi_yesterday_STEP2.Issuer,4)='DPFA'	THEN 'Own Issuance'
+									WHEN #sensi_yesterday_STEP2.Issuer='PFANDBKLUXSA'	THEN 'Own Issuance'
+									WHEN #sensi_yesterday_STEP2.Issuer='PBILLULL'		THEN 'Own Issuance'
+									WHEN #sensi_yesterday_STEP2.Issuer=NULL				THEN 'Check'
+									WHEN #sensi_yesterday_STEP2.Issuer=''				THEN 'Check'
+								
+								ELSE 'External Issuance'
+								
+								END 
+					
+				ELSE CASE 
+					
+					WHEN LEFT(#sensi_yesterday_STEP2.Customer,4)='DPFA'					THEN 'Internal'
+					WHEN CHARINDEX('ADJ', #sensi_yesterday_STEP2.Trade) > 0 THEN 'Internal_Adjustment'
+								ELSE 'External'
+								
+								END 
+
+			END 
+);
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+
+Now add a current and previous day flag
+
+
+*/
+
+ALTER TABLE #sensi_today_STEP1 
+ADD Day_Flag VARCHAR(200)
+
+
+UPDATE #sensi_today_STEP1 SET Day_Flag = 'CurrentDay'
+
+
+ALTER TABLE #sensi_yesterday_STEP2 
+ADD Day_Flag VARCHAR(200)
+
+
+UPDATE #sensi_yesterday_STEP2 SET Day_Flag = 'PreviousDay'
+
+
+
+
+
+
+--------------------------------------------------------------------------------------------------------
+
+ 
+
+ALTER TABLE #sensi_today_STEP1 
+
+ADD Level2_Name VARCHAR(200), 
+	Level3_Name VARCHAR(200),
+	Level4_Name VARCHAR(200)
+
+
+UPDATE #sensi_today_STEP1 SET Level2_Name = (
+
+												select max(D2.Name) 
+												from #sensi_today_STEP1, Star.Dimension_Desk D2 
+												where D2.DeskID = #sensi_today_STEP1.ParentDeskID
+
+											)
+
+
+UPDATE #sensi_today_STEP1 SET Level3_Name = (
+
+												Select d3.Name 
+												from Star.Dimension_Desk D3 
+												where #sensi_today_STEP1.ParentDeskID =d3.deskid
+											)
+
+
+UPDATE #sensi_today_STEP1 SET Level4_Name = (
+
+												Select d4.Name 
+												from Star.Dimension_Desk D3 ,Star.Dimension_Desk D4 
+												where #sensi_today_STEP1.ParentDeskID =d3.deskid
+												and D3.ParentDeskID = d4.deskid
+											)
+
+----------------------------------------------------------------------------------------------------------------
+
+
+
+ALTER TABLE #sensi_yesterday_STEP2 
+
+ADD Level2_Name VARCHAR(200), 
+	Level3_Name VARCHAR(200),
+	Level4_Name VARCHAR(200)
+
+
+UPDATE #sensi_yesterday_STEP2 SET Level2_Name = (
+
+												select max(D2.Name) 
+												from #sensi_yesterday_STEP2, Star.Dimension_Desk D2 
+												where D2.DeskID = #sensi_yesterday_STEP2.ParentDeskID
+
+											)
+
+
+UPDATE #sensi_yesterday_STEP2 SET Level3_Name = (
+
+												Select d3.Name 
+												from Star.Dimension_Desk D3 
+												where #sensi_yesterday_STEP2.ParentDeskID =d3.deskid
+											)
+
+
+UPDATE #sensi_yesterday_STEP2 SET Level4_Name = (
+
+												Select d4.Name 
+												from Star.Dimension_Desk D3 ,Star.Dimension_Desk D4 
+												where #sensi_yesterday_STEP2.ParentDeskID =d3.deskid
+												and D3.ParentDeskID = d4.deskid
+											)
+
+
+
+
+
+
+
+
+------------------------------------------------------------------------------------------------------------------
+
+
+/* Want to bring in sensi measure in usd
+*/
+ALTER TABLE #sensi_today_STEP1 
+ADD Sensi_usd float NULL
+
+
+UPDATE #sensi_today_STEP1 SET #sensi_today_STEP1.Sensi_usd = 
+( #sensi_today_STEP1.Sensi_eur
+	*
+		(
+			SELECT avg(FX1.ExchangeRate)
+			FROM Star.Fact_ExchangeRate FX1
+			WHERE 
+			FX1.CurrencyID = 2
+			AND FX1.TimeID =	(
+									Select top 1(#sensi_today_STEP1.ReportingDate)
+									from  #sensi_today_STEP1
+								)							
+		)
+)
+
+
+--
+
+ALTER TABLE #sensi_yesterday_STEP2 
+ADD Sensi_usd float NULL;
+
+
+
+UPDATE #sensi_yesterday_STEP2 SET #sensi_yesterday_STEP2.Sensi_usd = 
+( #sensi_yesterday_STEP2.Sensi_eur
+	*
+		(
+			SELECT avg(FX1.ExchangeRate)
+			FROM Star.Fact_ExchangeRate FX1
+			WHERE 
+			FX1.CurrencyID = 2
+			AND FX1.TimeID =	(
+									Select top 1(#sensi_yesterday_STEP2.ReportingDate)
+									from  #sensi_yesterday_STEP2
+								)							
+		)
+)
+
+
+
+
+/* Join the two tables
+*/
+
+
+Select * into #SensiFinal 
+from #sensi_today_STEP1
+UNION ALL
+Select * from #sensi_yesterday_STEP2
+
+
+IF OBJECT_ID('tempdb..#sensi_today_STEP1') IS  not NULL 
+DROP TABLE #sensi_today_STEP1
+IF OBJECT_ID('tempdb..#sensi_yesterday_STEP2') IS  not NULL 
+DROP TABLE #sensi_yesterday_STEP2
+
+
+
+Select 
+			#SensiFinal.ReportingDate,
+			#SensiFinal.Day_Flag,
+			#SensiFinal.Entity,
+			#SensiFinal.Company,
+			#SensiFinal.Level4_Name,
+			#SensiFinal.Level3_Name,
+			#SensiFinal.Level2_Name,
+			#SensiFinal.Portfolio,
+			#SensiFinal.Desk,
+			#SensiFinal.Trade,
+			#SensiFinal.Tradeid,
+			#SensiFinal.LookupCode,
+			#SensiFinal.Internal_External_Flag,
+			#SensiFinal.Issuer,
+			#SensiFinal.Customer,
+			#SensiFinal.Dealid,
+			#SensiFinal.Tradetype,
+			#SensiFinal.POSITION AS 'Position',
+			#SensiFinal.Book,
+			#SensiFinal.Accountingtreatment,
+			#SensiFinal.Rc,
+			#SensiFinal.Coverpool,
+			#SensiFinal.Scenccy,
+			#SensiFinal.Rf_type as 'RiskFactor Type',
+			#SensiFinal.Curvetype as 'CurveMethod_Type',
+			#SensiFinal.Years,
+--
+CASE
+           WHEN #SensiFinal.Years <= 1 THEN '<=1Y'
+           WHEN 1 < #SensiFinal.Years AND #SensiFinal.Years <= 5 THEN '2Y-5Y'
+           WHEN 5 < #SensiFinal.Years AND #SensiFinal.Years < 10 THEN '6Y-9Y'
+           WHEN 10 <= #SensiFinal.Years AND #SensiFinal.Years < 20 THEN '10Y-20Y'
+           WHEN 20 <= #SensiFinal.Years THEN '<=20Y'
+           ELSE 'N/A'
+       END AS 'Maturity Bucket',
+
+--
+			#SensiFinal.Sensi_eur as 'Sensi_Euro',
+			#SensiFinal.Sensi_usd as 'Sensi_Usd'
+
+
+ from #SensiFinal
